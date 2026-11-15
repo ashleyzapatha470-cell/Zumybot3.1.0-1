@@ -11,6 +11,7 @@ const port=Number(process.env.PORT||3000);
 const folder=process.env.SESSION_DIR||'./session';mkdirSync(folder,{recursive:true});
 const adminToken=process.env.ADMIN_TOKEN;
 let status='iniciando',sock=null,qr=null,attempt=0,paused=false;
+let pairingSocket = null;
 const logger=pino({level:process.env.LOG_LEVEL||'info'});
 const handleGroup = createGroupHandler({
   folder,
@@ -18,7 +19,7 @@ const handleGroup = createGroupHandler({
   downloadMedia: msg => downloadMediaMessage(msg, 'buffer', {}),
   restart: () => process.exit(1),
 });
-const protect=(req,res,next)=>{if(!adminToken)return res.status(503).json({error:'Configure ADMIN_TOKEN em Environment no Render'});if(req.get('authorization')!==`Bearer ${adminToken}`)return res.status(401).json({error:'Token incorreto. Use o ADMIN_TOKEN do serviço ZUMYBOT-3.0.'});next()};
+const protect=(req,res,next)=>{if(!adminToken)return res.status(503).json({error:'Configure ADMIN_TOKEN em Environment no Render'});if(req.get('authorization')!==`Bearer ${adminToken}`)return res.status(401).json({error:'Token incorreto. Use o ADMIN_TOKEN do serviço Zumybot3.1.0.'});next()};
 app.get('/',(_req,res)=>res.type('html').send(`<html lang="pt-br"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ZUMY</title><body style="font:18px system-ui;background:#101a28;color:white;padding:24px"><h1>🤖 ZUMY</h1><p>Status público: <b>${status}</b></p><p>Use /health para conferir a conexão. Administração por API protegida.</p></body></html>`));
 app.get('/parear', (_req, res) => {
   const nonce = randomBytes(18).toString('base64');
@@ -81,6 +82,9 @@ app.get('/parear', (_req, res) => {
         body: JSON.stringify({ number: number.value }),
         cache: 'no-store',
       });
+      if (!response.headers.get('content-type')?.includes('application/json')) {
+        throw new Error('O Render respondeu HTTP ' + response.status + '. Confira /health e tente novamente.');
+      }
       const data = await response.json();
       if (!response.ok || typeof data.code !== 'string') {
         throw new Error(data.error || 'O servidor não retornou um código.');
@@ -106,7 +110,49 @@ app.post('/admin/pause',protect,(req,res)=>{
   res.json({paused});
 });
 app.get('/admin/qr',protect,(_req,res)=>res.json({qr:qr||null}));
-app.post('/admin/pair',protect,async(req,res)=>{res.set('Cache-Control','no-store');const number=String(req.body?.number||'').replace(/\D/g,'');if(!/^55\d{10,11}$/.test(number))return res.status(400).json({error:'Informe 55 + DDD + número'});if(status==='conectado')return res.status(409).json({error:'O ZUMY já está conectado ao WhatsApp.'});if(!sock||!qr)return res.status(409).json({error:'O ZUMY ainda não está pronto para parear. Confira o status do bot e tente novamente.'});try{const code=await sock.requestPairingCode(number);res.json({code})}catch(e){logger.error({err:e},'Falha pareamento');res.status(500).json({error:'Não foi possível gerar código; confira os logs'})}});
+app.post('/admin/pair', protect, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const number = String(req.body?.number || '').replace(/\D/g, '');
+  if (!/^55\d{10,11}$/.test(number)) {
+    return res.status(400).json({ error: 'Informe 55 + DDD + número.' });
+  }
+  if (status === 'conectado') {
+    return res.status(409).json({ error: 'O ZUMY já está conectado ao WhatsApp.' });
+  }
+
+  const current = sock;
+  if (!current || !qr || status !== 'aguardando_pareamento') {
+    return res.status(409).json({
+      error: 'Estado atual: ' + status + '. Aguarde o status aguardando_pareamento e tente novamente.',
+    });
+  }
+  if (pairingSocket === current) {
+    return res.status(409).json({ error: 'Já existe um pedido em andamento. Aguarde a resposta.' });
+  }
+
+  pairingSocket = current;
+  try {
+    const code = await current.requestPairingCode(number);
+    if (current !== sock || status !== 'aguardando_pareamento') {
+      return res.status(409).json({
+        error: 'A conexão mudou ao gerar o código. Verifique o status antes de tentar novamente.',
+      });
+    }
+    if (typeof code !== 'string' || !code.trim()) {
+      return res.status(502).json({ error: 'O WhatsApp não retornou um código de pareamento.' });
+    }
+    return res.json({ code });
+  } catch (error) {
+    const code = error?.output?.statusCode;
+    logger.error({ err: error, code }, 'Falha pareamento');
+    const detail = Number.isInteger(code) ? ' Código da conexão: ' + code + '.' : '';
+    return res.status(502).json({
+      error: 'Não foi possível gerar código.' + detail + ' Confira o status do bot e os logs do Render.',
+    });
+  } finally {
+    if (pairingSocket === current) pairingSocket = null;
+  }
+});
 app.listen(port,'0.0.0.0',()=>logger.info({port},'ZUMY HTTP iniciado'));
 async function connect(){
   status='conectando';const {state,saveCreds}=await useMultiFileAuthState(folder);
