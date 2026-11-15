@@ -50,15 +50,44 @@ async function requestJson(url, options) {
 const maxAudioBytes = 12 * 1024 * 1024;
 const audioTypes = new Map([
   ['audio/mpeg', 'audio/mpeg'],
+  ['audio/mp3', 'audio/mpeg'],
+  ['audio/x-mp3', 'audio/mpeg'],
   ['audio/mp4', 'audio/mp4'],
   ['audio/x-m4a', 'audio/mp4'],
 ]);
 
-async function readAudio(response) {
-  const mimetype = audioTypes.get(response.headers.get('content-type')?.split(';')[0].trim().toLowerCase());
-  if (!mimetype || !response.body) {
+const genericDownloadTypes = new Set([
+  '', 'application/octet-stream', 'binary/octet-stream', 'application/force-download',
+  'application/download', 'application/x-download',
+]);
+
+async function confirmMp3(audio) {
+  const folder = await mkdtemp(join(tmpdir(), 'zumy-audio-'));
+  try {
+    const file = join(folder, 'track.mp3');
+    await writeFile(file, audio);
+    const { stdout } = await ffmpeg('ffprobe', [
+      '-v', 'error', '-protocol_whitelist', 'file', '-f', 'mp3', '-i', file,
+      '-select_streams', 'a:0', '-show_entries', 'stream=codec_name',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+    ], { timeout: 5000, maxBuffer: 8192 });
+    if (stdout.trim() !== 'mp3') throw new Error('Codec diferente de MP3.');
+  } catch (error) {
+    if (error.code === 'ENOENT') throw error;
+    throw new Error('O arquivo recebido do Jamendo não contém áudio MP3 válido.');
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+}
+
+async function readAudio(response, { allowGenericMp3 = false } = {}) {
+  const contentType = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() || '';
+  const knownType = audioTypes.get(contentType);
+  const checkMp3 = !knownType && allowGenericMp3 && genericDownloadTypes.has(contentType);
+  if ((!knownType && !checkMp3) || !response.body) {
     await response.body?.cancel();
-    throw new Error('O endereço precisa fornecer um arquivo MP3 ou M4A.');
+    throw new Error('O endereço precisa fornecer um arquivo MP3 ou M4A. Tipo recebido: ' +
+      (contentType.slice(0, 80) || 'não informado') + '.');
   }
   if (Number(response.headers.get('content-length')) > maxAudioBytes) {
     await response.body.cancel();
@@ -73,7 +102,9 @@ async function readAudio(response) {
     chunks.push(chunk);
   }
   if (!length) throw new Error('O arquivo de áudio está vazio.');
-  return { audio: Buffer.concat(chunks, length), mimetype, ptt: false };
+  const audio = Buffer.concat(chunks, length);
+  if (checkMp3) await confirmMp3(audio);
+  return { audio, mimetype: knownType || 'audio/mpeg', ptt: false };
 }
 
 function audioOrigin(value) {
@@ -108,7 +139,7 @@ async function downloadJamendo(url) {
       await response.body?.cancel();
       throw new Error('O catálogo retornou HTTP ' + response.status);
     }
-    return readAudio(response);
+    return readAudio(response, { allowGenericMp3: true });
   }
   throw new Error('O catálogo retornou muitos redirecionamentos.');
 }
