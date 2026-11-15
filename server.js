@@ -1,0 +1,150 @@
+import express from 'express';
+import pino from 'pino';
+import { randomBytes } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { createGroupHandler } from './grupos.js';
+import { prefix } from './menu.js';
+
+const app=express();app.use(express.json());
+const port=Number(process.env.PORT||3000);
+const folder=process.env.SESSION_DIR||'./session';mkdirSync(folder,{recursive:true});
+const adminToken=process.env.ADMIN_TOKEN;
+let status='iniciando',sock=null,qr=null,attempt=0,paused=false;
+const logger=pino({level:process.env.LOG_LEVEL||'info'});
+const handleGroup = createGroupHandler({
+  folder,
+  logger,
+  downloadMedia: msg => downloadMediaMessage(msg, 'buffer', {}),
+  restart: () => process.exit(1),
+});
+const protect=(req,res,next)=>{if(!adminToken)return res.status(503).json({error:'Configure ADMIN_TOKEN em Environment no Render'});if(req.get('authorization')!==`Bearer ${adminToken}`)return res.status(401).json({error:'Token incorreto. Use o ADMIN_TOKEN do serviço ZUMYBOT-3.0.'});next()};
+app.get('/',(_req,res)=>res.type('html').send(`<html lang="pt-br"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ZUMY</title><body style="font:18px system-ui;background:#101a28;color:white;padding:24px"><h1>🤖 ZUMY</h1><p>Status público: <b>${status}</b></p><p>Use /health para conferir a conexão. Administração por API protegida.</p></body></html>`));
+app.get('/parear', (_req, res) => {
+  const nonce = randomBytes(18).toString('base64');
+  res.set({
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': "default-src 'none'; script-src 'nonce-" + nonce +
+      "'; style-src 'nonce-" + nonce + "'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
+    'Referrer-Policy': 'no-referrer',
+  });
+  res.type('html').send(`<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parear ZUMY</title>
+<style nonce="${nonce}">
+  * { box-sizing: border-box; }
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; background: #101a28; color: #fff; }
+  main { max-width: 32rem; margin: 4vh auto; }
+  label, input, button { display: block; width: 100%; }
+  input, button { margin: 6px 0 16px; padding: 12px; border-radius: 8px; font: inherit; }
+  input { border: 1px solid #91a8be; }
+  button { background: #8af0bb; color: #10241d; border: 0; font-weight: 650; }
+  button:disabled { opacity: .65; }
+  a { color: #a0deff; }
+  #code { font: bold 1.5rem ui-monospace, monospace; letter-spacing: .15em; overflow-wrap: anywhere; }
+</style>
+<main>
+  <h1>Parear ZUMY BOT</h1>
+  <form id="pair" autocomplete="off">
+    <label for="number">Número do bot com código do país</label>
+    <input id="number" type="tel" inputmode="tel" value="5511960649533" required maxlength="25">
+    <label for="token">Token de administração do Render (ADMIN_TOKEN)</label>
+    <input id="token" type="password" required autocomplete="off">
+    <button type="submit">Gerar código</button>
+  </form>
+  <p id="result" role="status"></p>
+  <p id="code"></p>
+  <p>No WhatsApp do bot, abra <strong>Aparelhos conectados → Conectar um aparelho → Conectar com número de telefone</strong>.</p>
+  <a href="/health">Ver status do bot</a>
+</main>
+<script nonce="${nonce}">
+  const form = document.getElementById('pair');
+  const token = document.getElementById('token');
+  const number = document.getElementById('number');
+  const result = document.getElementById('result');
+  const code = document.getElementById('code');
+  const submit = form.querySelector('button');
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    submit.disabled = true;
+    code.textContent = '';
+    result.textContent = 'Solicitando código…';
+    const authorization = 'Bearer ' + token.value.trim();
+    token.value = '';
+    try {
+      const response = await fetch('/admin/pair', {
+        method: 'POST',
+        headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ number: number.value }),
+        cache: 'no-store',
+      });
+      const data = await response.json();
+      if (!response.ok || typeof data.code !== 'string') {
+        throw new Error(data.error || 'O servidor não retornou um código.');
+      }
+      code.textContent = data.code;
+      result.textContent = 'Digite este código no WhatsApp do bot.';
+    } catch (error) {
+      result.textContent = error.message === 'Failed to fetch'
+        ? 'Falha ao acessar o serviço. Tente novamente.'
+        : error.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+</script>
+</html>`);
+});
+app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix}));
+app.get('/admin/status',protect,(_req,res)=>res.json({status,paused,qrDisponivel:!!qr}));
+app.post('/admin/pause',protect,(req,res)=>{
+  if(typeof req.body?.paused!=='boolean')return res.status(400).json({error:'Informe paused como true ou false'});
+  paused=req.body.paused;
+  res.json({paused});
+});
+app.get('/admin/qr',protect,(_req,res)=>res.json({qr:qr||null}));
+app.post('/admin/pair',protect,async(req,res)=>{res.set('Cache-Control','no-store');const number=String(req.body?.number||'').replace(/\D/g,'');if(!/^55\d{10,11}$/.test(number))return res.status(400).json({error:'Informe 55 + DDD + número'});if(status==='conectado')return res.status(409).json({error:'O ZUMY já está conectado ao WhatsApp.'});if(!sock||!qr)return res.status(409).json({error:'O ZUMY ainda não está pronto para parear. Confira o status do bot e tente novamente.'});try{const code=await sock.requestPairingCode(number);res.json({code})}catch(e){logger.error({err:e},'Falha pareamento');res.status(500).json({error:'Não foi possível gerar código; confira os logs'})}});
+app.listen(port,'0.0.0.0',()=>logger.info({port},'ZUMY HTTP iniciado'));
+async function connect(){
+  status='conectando';const {state,saveCreds}=await useMultiFileAuthState(folder);
+  const current=makeWASocket({auth:state,logger:logger.child({module:'baileys'}),printQRInTerminal:false,markOnlineOnConnect:false, syncFullHistory:false});sock=current;
+  current.ev.on('creds.update',saveCreds);
+  current.ev.on('connection.update',({connection,lastDisconnect,qr:nextQr})=>{
+    if(current!==sock)return;
+    if(nextQr){status='aguardando_pareamento';qr=nextQr;logger.info('QR de pareamento disponível')}
+    if(connection==='open'){status='conectado';qr=null;attempt=0;logger.info('ZUMY WhatsApp conectado')}
+    if(connection==='close'){
+      status='desconectado';qr=null;
+      const code=lastDisconnect?.error?.output?.statusCode;
+      logger.warn({code},'Conexão WhatsApp encerrada');
+      if(code===DisconnectReason.loggedOut){status='sessao_expirada';logger.error('Sessão expirada: novo pareamento necessário');return}
+      const delay=Math.min(30000,2000*2**Math.min(attempt++,4));setTimeout(()=>{if(sock===current)connect().catch(e=>logger.error({err:e},'Falha reconexão'))},delay);
+    }
+  });
+  current.ev.on('group-participants.update', event => {
+    if (paused || current !== sock) return;
+    handleGroup.onParticipantsUpdate(current, event)
+      .catch(error => logger.warn({ err: error }, 'Falha na mensagem de boas-vindas'));
+  });
+  current.ev.on('messages.upsert',async({messages,type})=>{
+    logger.info({type,quantity:messages?.length},'Evento messages.upsert');
+    if(paused||type!=='notify'||current!==sock)return;
+    for(const msg of messages||[]){
+      if(!msg?.message||!msg.key?.remoteJid?.endsWith('@g.us'))continue;
+      logger.info({chat:msg.key.remoteJid,isGroup:msg.key.remoteJid?.endsWith('@g.us')},'Mensagem recebida');
+      try {
+        await handleGroup(current,msg);
+      } catch (error) {
+        logger.error({err:error, chat:msg.key.remoteJid},'Erro ao processar mensagem de grupo');
+        if ((msg.message.conversation || msg.message.extendedTextMessage?.text || '').trimStart().startsWith(prefix)) {
+          await current.sendMessage(msg.key.remoteJid, {text:'Não consegui concluir o comando agora.'}, {quoted:msg})
+            .catch(err => logger.warn({err}, 'Falha ao informar erro do comando'));
+        }
+      }
+    }
+  });
+}
+connect().catch(e=>{status='erro';logger.error({err:e},'Erro ao iniciar WhatsApp')});
