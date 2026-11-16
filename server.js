@@ -1,7 +1,8 @@
 import express from 'express';
 import pino from 'pino';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys';
 import { createGroupHandler } from './grupos.js';
 import { prefix } from './menu.js';
@@ -10,6 +11,23 @@ import { chamouZumy } from './voz.js';
 const app=express();app.use(express.json());
 const port=Number(process.env.PORT||3000);
 const folder=process.env.SESSION_DIR||'./session';mkdirSync(folder,{recursive:true});
+const authPointer = join(folder, 'zumy-auth-active');
+function activeAuthFolder() {
+  try {
+    const name = readFileSync(authPointer, 'utf8').trim();
+    if (!/^whatsapp-[a-zA-Z0-9]{6}$/.test(name)) throw new Error('Pasta de sessão inválida.');
+    return join(folder, name);
+  } catch (error) {
+    if (error.code === 'ENOENT') return folder;
+    throw error;
+  }
+}
+function prepareNewAuthFolder() {
+  const path = mkdtempSync(join(folder, 'whatsapp-'));
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  writeFileSync(authPointer + '.tmp', name, { mode: 0o600 });
+  renameSync(authPointer + '.tmp', authPointer);
+}
 const adminToken=process.env.ADMIN_TOKEN;
 let status='iniciando',sock=null,qr=null,attempt=0,paused=false;
 let reconnectTimer;
@@ -52,7 +70,7 @@ app.get('/parear', (_req, res) => {
   <h1>Parear ZUMY BOT</h1>
   <form id="pair" autocomplete="off">
     <label for="number">Número do bot com código do país</label>
-    <input id="number" type="tel" inputmode="tel" value="5511960649533" required maxlength="25">
+    <input id="number" type="tel" inputmode="tel" placeholder="55 + DDD + número" required maxlength="25">
     <label for="token">Token de administração do Render (ADMIN_TOKEN)</label>
     <input id="token" type="password" required autocomplete="off">
     <button type="submit">Gerar código</button>
@@ -101,7 +119,7 @@ app.get('/parear', (_req, res) => {
 </script>
 </html>`);
 });
-app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'comandos-v4'}));
+app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'comandos-v5'}));
 app.get('/admin/status',protect,(_req,res)=>res.json({status,paused,qrDisponivel:!!qr}));
 app.post('/admin/pause',protect,(req,res)=>{
   if(typeof req.body?.paused!=='boolean')return res.status(400).json({error:'Informe paused como true ou false'});
@@ -131,7 +149,7 @@ async function startConnection() {
 }
 
 async function connect(){
-  status='conectando';const {state,saveCreds}=await useMultiFileAuthState(folder);
+  status='conectando';const {state,saveCreds}=await useMultiFileAuthState(activeAuthFolder());
   const current=makeWASocket({auth:state,logger:logger.child({module:'baileys'}),printQRInTerminal:false,markOnlineOnConnect:false, syncFullHistory:false});sock=current;
   const processed = new Map();
   let connectedAt = 0;
@@ -146,7 +164,23 @@ async function connect(){
       sock=null;qr=null;
       const code=lastDisconnect?.error?.output?.statusCode;
       logger.warn({code},'Conexão WhatsApp encerrada');
-      if(code===DisconnectReason.loggedOut){status='sessao_expirada';logger.error('Sessão expirada: novo pareamento necessário');return}
+      if (code === DisconnectReason.loggedOut) {
+        status = 'sessao_expirada';
+        if (!state.creds?.registered) {
+          logger.warn('Sessão sem vínculo recusada pelo WhatsApp. Confira os logs antes de tentar novamente.');
+          return;
+        }
+        try {
+          prepareNewAuthFolder();
+          status = 'preparando_pareamento';
+          attempt = 0;
+          logger.info('Sessão encerrada. Preparando novo pareamento.');
+          scheduleReconnect();
+        } catch (error) {
+          logger.error({ code: error.code, name: error.name }, 'Falha ao preparar novo pareamento');
+        }
+        return;
+      }
       if(code===DisconnectReason.connectionReplaced){
         status='conexao_substituida';
         logger.warn('Conexão substituída. Confira se a sessão está aberta em outra instância.');
