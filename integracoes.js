@@ -147,6 +147,75 @@ async function downloadJamendo(url) {
   throw new Error('O catálogo retornou muitos redirecionamentos.');
 }
 
+const archiveOrigin = 'https://archive.org';
+const archiveItem = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,149}$/;
+const archiveLicensePath = /^\/(?:licenses\/(?:by|by-sa)\/(?:1\.0|2\.0|2\.5|3\.0|4\.0)(?:\/[a-z-]+)?|publicdomain\/zero\/1\.0)\/?$/i;
+
+function licensedArchiveItem(record) {
+  const licenses = [record?.metadata?.licenseurl].flat();
+  if (licenses.length !== 1 || !licenses[0]) return;
+  try {
+    const url = new URL(licenses[0]);
+    if (!['https:', 'http:'].includes(url.protocol) || url.hostname !== 'creativecommons.org' ||
+        url.port || url.username || url.password || !archiveLicensePath.test(url.pathname)) return;
+    return 'https://creativecommons.org' + url.pathname;
+  } catch {
+    return;
+  }
+}
+
+function archiveLink(arg) {
+  try {
+    const url = new URL(arg);
+    if (url.origin !== archiveOrigin || url.username || url.password) return;
+    const [, route, id, ...rest] = url.pathname.replace(/\/$/, '').split('/');
+    if (route !== 'details' || !archiveItem.test(id) || rest.length) return;
+    return id;
+  } catch {
+    return;
+  }
+}
+
+async function downloadArchive(url, video) {
+  const signal = AbortSignal.timeout(20000);
+  for (let redirects = 0; redirects <= 3; redirects++) {
+    const next = new URL(url);
+    if (next.protocol !== 'https:' || next.port || next.username || next.password ||
+        !/(?:^|\.)archive\.org$/i.test(next.hostname)) {
+      throw new Error('O Archive redirecionou para um endereço fora do catálogo.');
+    }
+    const response = await fetch(next, { redirect: 'manual', signal });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get('location');
+      await response.body?.cancel();
+      if (!location) throw new Error('Redirecionamento do Archive sem endereço.');
+      url = new URL(location, next).href;
+      continue;
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error('Download do Archive retornou HTTP ' + response.status);
+    }
+    const media = await readAudio(response, { allowGenericMp3: !video, allowVideo: video });
+    if (video && !media.video) throw new Error('O item não retornou um vídeo MP4.');
+    if (!video && media.mimetype !== 'audio/mpeg') throw new Error('O item não retornou MP3.');
+    return media;
+  }
+  throw new Error('O Archive retornou muitos redirecionamentos.');
+}
+
+function chooseArchiveFile(record, extension, query) {
+  const files = (Array.isArray(record.files) ? record.files : []).filter(file => {
+    const size = Number(file?.size);
+    return typeof file?.name === 'string' && !/[\\/]/.test(file.name) &&
+      file.name.toLowerCase().endsWith('.' + extension) && Number.isSafeInteger(size) &&
+      size > 0 && size <= maxAudioBytes && !file.private;
+  });
+  if (!query) return files[0];
+  const title = trackName(query);
+  return files.find(file => trackName(String(file.title || file.name)).includes(title)) || files[0];
+}
+
 const localTracks = [
   ['opera_o_anti_z_gavi_o.mp3', ['opera', 'opera o anti z gavi o']],
   ['estou_apaixonado.m4a', ['estou apaixonado', 'daniel', 'estoy enamorado']],
@@ -245,9 +314,65 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     }
   }
 
+  async function playArchive({ arg, reply, send }, requestedId) {
+    const [, extension, term] = /^(?:(mp3|mp4)\s+)?([\s\S]+)$/i.exec(arg.trim()) || [];
+    const format = extension?.toLowerCase() || 'mp3';
+    const query = (term || '').replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const id = requestedId || (term && archiveLink(term));
+    if (!id && (!query || query.length > 120)) {
+      return reply('Use !play archive NOME, !play archive mp4 NOME ou !play com o link de um item archive.org/details/.');
+    }
+    const getItem = identifier => requestJson(archiveOrigin + '/metadata/' + encodeURIComponent(identifier));
+    try {
+      let ids = id ? [id] : [];
+      if (!id) {
+        const search = new URL('/advancedsearch.php', archiveOrigin);
+        search.searchParams.set('q', 'mediatype:' + (format === 'mp4' ? 'movies' : 'audio') +
+          ' AND title:"' + query + '" AND licenseurl:*');
+        search.searchParams.set('fl[]', 'identifier');
+        search.searchParams.set('output', 'json');
+        search.searchParams.set('rows', '4');
+        const data = await requestJson(search);
+        ids = (data.response?.docs || []).map(doc => doc.identifier).filter(value => archiveItem.test(value || ''));
+      }
+      const results = await Promise.allSettled(ids.map(getItem));
+      let lastError = results.find(result => result.status === 'rejected')?.reason;
+      for (let i = 0; i < ids.length; i++) {
+        const record = results[i].value;
+        if (!record || record.is_dark || record.metadata?.['access-restricted-item']) continue;
+        const license = licensedArchiveItem(record);
+        if (!license) continue;
+        const file = chooseArchiveFile(record, format, id ? '' : query);
+        if (!file) continue;
+        const page = archiveOrigin + '/details/' + encodeURIComponent(ids[i]);
+        const raw = archiveOrigin + '/download/' + encodeURIComponent(ids[i]) + '/' + encodeURIComponent(file.name);
+        let media;
+        try { media = await downloadArchive(raw, format === 'mp4'); }
+        catch (error) { lastError = error; continue; }
+        const creator = [record.metadata.creator].flat().filter(Boolean).join(', ').slice(0, 180);
+        const title = String(file.title || record.metadata.title || file.name).slice(0, 180);
+        const credit = title + (creator ? ' — ' + creator : '') + '\nFonte: ' + page + '\nLicença: ' + license;
+        if (media.video) return await send({ ...media, caption: credit });
+        await reply(credit);
+        return await send(media);
+      }
+      if (lastError) {
+        logger.warn({ name: lastError.name, err: lastError.message }, 'Falha no Internet Archive');
+        return reply('O Internet Archive não entregou o arquivo agora. Tente novamente ou use outro item.');
+      }
+      return reply('Não encontrei um ' + format.toUpperCase() +
+        ' de até 12 MB com licença de compartilhamento confirmada no Internet Archive.' +
+        (id ? '\n' + archiveOrigin + '/details/' + encodeURIComponent(id) : ''));
+    } catch (error) {
+      logger.warn({ name: error.name, err: error.message }, 'Falha na busca do Internet Archive');
+      return reply('O Internet Archive está indisponível para esta busca. Tente novamente em instantes.');
+    }
+  }
+
   async function playAudio({ arg, reply, send }) {
     if (!arg || trackName(arg) === 'lista') {
-      return reply('🎵 Áudios cadastrados\n' + localTracks.map(([, [name]]) => '!play ' + name).join('\n'));
+      return reply('🎵 Áudios cadastrados\n' + localTracks.map(([, [name]]) => '!play ' + name).join('\n') +
+        '\n\nCatálogo externo: !play archive NOME');
     }
     const name = trackName(arg);
     const localFile = fileByName.get(name);
@@ -256,6 +381,9 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     if (['verao', 'verao bell marques'].includes(name) || arg === audiusLink) {
       return reply('🎵 VERÃO — Bell Marques\n' + audiusLink);
     }
+    if (/^archive(?:\s|$)/i.test(arg)) return playArchive({ arg: arg.slice(7), reply, send });
+    const item = archiveLink(arg);
+    if (item) return playArchive({ arg, reply, send }, item);
     const origin = audioOrigin(arg);
     if (!origin) {
       if (/^\w+:\/\//.test(arg)) return reply('Use um link HTTPS direto de um MP3, M4A ou MP4.');
