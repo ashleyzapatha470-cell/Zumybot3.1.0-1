@@ -20,6 +20,18 @@ const normalizeJid = id => String(id || '').replace(/:\d+(?=@)/, '').replace(/@c
 const userJid = number => number + '@s.whatsapp.net';
 const groupJid = id => typeof id === 'string' && id.endsWith('@g.us');
 const identity = member => [member?.id, member?.phoneNumber, member?.lid].filter(Boolean).map(normalizeJid);
+export function identidadePrivada(ids) {
+  const identificadores = ids.filter(Boolean).map(normalizeJid);
+  const telefone = identificadores.find(id => /^\d{10,15}@s\.whatsapp\.net$/.test(id));
+  const lid = identificadores.find(id => /^\d+@lid$/.test(id));
+  const linhas = ['🔑 Sua identidade no ZUMY'];
+  if (telefone) linhas.push('OWNER_NUMBER=' + telefone.split('@')[0]);
+  if (lid) linhas.push('OWNER_LID=' + lid);
+  if (!telefone && !lid) linhas.push('Nenhum identificador confirmado neste evento.');
+  linhas.push('Se você é o responsável pelo bot, use os valores disponíveis no Render. Mantenha esta mensagem no privado.');
+  return linhas.join('\n');
+}
+
 const chatText = message => message?.conversation || message?.extendedTextMessage?.text ||
   message?.imageMessage?.caption || message?.videoMessage?.caption || message?.documentMessage?.caption || '';
 
@@ -67,7 +79,7 @@ const adminCommands = new Set([
 const basic = {
   menu: ({ arg, reply }) => reply(menu(arg)),
   ajuda: ({ reply }) => reply('Use !menu para ver os atalhos. Exemplos: !jogos, !musicas e !administracao.\n!menu completo lista tudo.\nResponda a uma mensagem ou marque alguém quando o comando pedir.'),
-  dono: ({ reply }) => reply('Dono: ' + ownerName),
+  dono: ({ reply, ownerLabel }) => reply('👑 Responsável pelo ZUMY: ' + ownerLabel + '\nPara ver os administradores deste grupo, use !admins.'),
   ping: ({ reply }) => reply('🏓 Pong! ZUMY online.'),
   hora: ({ reply }) => reply('🕐 ' + new Intl.DateTimeFormat('pt-BR', {
     timeZone: process.env.BOT_TIMEZONE || 'America/Fortaleza', hour: '2-digit', minute: '2-digit',
@@ -230,6 +242,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
   const ownerDigits = String(env.OWNER_NUMBER || ownerNumber).replace(/\D/g, '');
   if (!/^\d{10,15}$/.test(ownerDigits)) throw new Error('OWNER_NUMBER deve conter DDI, DDD e número.');
   const ownerJid = userJid(ownerDigits);
+  const ownerLabel = String(env.OWNER_NAME || ownerName).replace(/[\r\n*]/g, ' ').trim().slice(0, 60) || ownerName;
   const ownerLid = /^\d+@lid$/.test(env.OWNER_LID || '') ? env.OWNER_LID : undefined;
   const config = readSettings(folder);
   const recent = new Map();
@@ -290,7 +303,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     regras: ({ meta, reply }) => reply(meta.desc || 'Este grupo não tem regras na descrição.'),
     ...groupActions(), ...security, ...rank, ...relation, ...games, ...jokeActions, ...integrations,
     ...ownerActions(restart, ownerJid),
-    configurar: ({ reply, settings }) => reply(menu('configuracao', { nickname: settings.nickname })),
+    configurar: ({ reply, settings }) => reply(menu('configuracao', { nickname: settings.nickname, ownerLabel })),
     vozzumy: ({ arg, settings, update, reply }) => {
       const estilo = arg.toLowerCase();
       const opcoes = Object.keys(estilosVoz).join(', ');
@@ -300,6 +313,17 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
       return reply('Voz da Zumy alterada para ' + estilo + '. Escreva “Zumy, tudo bem?” para testar.');
     },
     testarvoz: context => responderVoz.testar(context.voz),
+    meuid: async ({ sock, senderIds, actor, reply }) => {
+      if (!actor || !/^\d+(?::\d+)?@(lid|s\.whatsapp\.net|c\.us)$/.test(actor)) {
+        return reply('Envie !meuid no privado do ZUMY para conferir sua identidade.');
+      }
+      try {
+        await sock.sendMessage(actor, { text: identidadePrivada(senderIds) });
+        return reply('Enviei sua identidade no privado.');
+      } catch {
+        return reply('Abra uma conversa privada com o ZUMY e envie !meuid para conferir sua identidade.');
+      }
+    },
     ...groupSettings.commands,
     p: integrations.play,
   };
@@ -415,13 +439,13 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
       }
     };
     const reply = (text, options) => send({ text }, options);
-    const menuInfo = { nickname: settings.nickname, user: msg.pushName };
+    const menuInfo = { nickname: settings.nickname, user: msg.pushName, ownerLabel };
     if (msg.key.fromMe && !usaPrefixo && !zoom && !chamadaVoz) return;
     const hasAccessRules = settings.soadm || settings.blockedCommands?.length || settings.cooldown;
     if (!hasAccessRules) {
       if (command === 'menu') return reply(menu(arg, menuInfo));
       if (categoryCommands.includes(command)) return reply(menu(command, menuInfo));
-      if (Object.hasOwn(basic, command)) return basic[command]({ arg, reply });
+      if (Object.hasOwn(basic, command)) return basic[command]({ arg, reply, ownerLabel });
     }
     const activeSecurity = Object.keys(settings).some(name => name !== 'zoeira' && settings[name] &&
       (Object.hasOwn(flags, name) || name.startsWith('anti') || name === 'maxChars'));
@@ -455,7 +479,9 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const sender = findMember(ids) || findMember(await aliasesFor(ids));
     const actor = sender?.id || ids[0];
     let senderIds = [...new Set([...ids, ...identity(sender)])];
-    if (ownerCommands.has(command) && !senderIds.includes(ownerJid)) senderIds = await aliasesFor(senderIds);
+    if (command === 'meuid' || (ownerCommands.has(command) && !senderIds.includes(ownerJid))) {
+      senderIds = await aliasesFor(senderIds);
+    }
     const isOwner = senderIds.includes(ownerJid) || Boolean(ownerLid && senderIds.includes(ownerLid));
     const isGroupOwner = [meta.owner, meta.ownerPn].some(id => id && senderIds.includes(normalizeJid(id)));
     const isAdmin = isOwner || isGroupOwner || ['admin', 'superadmin'].includes(sender?.admin) ||
@@ -497,7 +523,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     }
     if (command === 'menu') return reply(menu(arg, menuInfo));
     if (categoryCommands.includes(command)) return reply(menu(command, menuInfo));
-    if (Object.hasOwn(basic, command)) return basic[command]({ arg, reply });
+    if (Object.hasOwn(basic, command)) return basic[command]({ arg, reply, ownerLabel });
     if (command === 'membros') return reply('O grupo tem ' + participants.length + ' participantes.');
     if (command === 'apelido' && !arg) return reply('Apelido neste grupo: ' + (settings.nickname || botName));
     logger.info({ command, jid }, 'Comando de grupo');
@@ -531,7 +557,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const mediaMessage = isMedia(content) || !isMedia(quotedContent) ? msg : quoted;
     const source = contentOf(mediaMessage.message);
     const context = {
-      sock, jid, arg, reply, send, meta, actor, isAdmin, botAdmin, commandKey: msg.key, target: targetMember?.id || target, targetMember, targetPhone, settings, quotedKey, source, voz,
+      sock, jid, arg, reply, send, meta, actor, senderIds, isAdmin, botAdmin, commandKey: msg.key, target: targetMember?.id || target, targetMember, targetPhone, settings, quotedKey, source, voz,
       members,
       admins: participants.filter(member => member.admin === 'admin' || member.admin === 'superadmin' ||
         member.isAdmin === true || member.isSuperAdmin === true).map(member => member.id).filter(Boolean),

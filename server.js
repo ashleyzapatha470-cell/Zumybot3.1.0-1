@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys';
-import { createGroupHandler } from './grupos.js';
+import { createGroupHandler, identidadePrivada } from './grupos.js';
 import { prefix } from './menu.js';
 import { chamouZumy } from './voz.js';
 
@@ -119,7 +119,7 @@ app.get('/parear', (_req, res) => {
 </script>
 </html>`);
 });
-app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'comandos-v6'}));
+app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'comandos-v7'}));
 app.get('/admin/status',protect,(_req,res)=>res.json({status,paused,qrDisponivel:!!qr}));
 app.post('/admin/pause',protect,(req,res)=>{
   if(typeof req.body?.paused!=='boolean')return res.status(400).json({error:'Informe paused como true ou false'});
@@ -212,9 +212,14 @@ async function connect(){
     }
     for (const msg of messages || []) {
       if (paused || current !== sock) break;
-      const { remoteJid, id, fromMe } = msg?.key || {};
-      if (!msg?.message || !remoteJid?.endsWith('@g.us')) continue;
+      const { remoteJid, remoteJidAlt, id, fromMe } = msg?.key || {};
+      if (!msg?.message || !remoteJid) continue;
       const text = commandText(msg.message);
+      const group = remoteJid.endsWith('@g.us');
+      const identityRequest = !group && type === 'notify' && !fromMe &&
+        /^\d+(?::\d+)?@(lid|s\.whatsapp\.net|c\.us)$/.test(remoteJid) &&
+        text.toLowerCase() === prefix + 'meuid';
+      if (!group && !identityRequest) continue;
       const isCommand = text.startsWith(prefix) || /^zoom(?:$|[\s,:])/i.test(text);
       const hasTrigger = isCommand || chamouZumy(text);
       if (type === 'append' || (fromMe && hasTrigger)) {
@@ -230,7 +235,11 @@ async function connect(){
       }
       if (isCommand) logger.info({ type, fromMe: Boolean(fromMe) }, 'Comando recebido do WhatsApp');
       try {
-        await handleGroup(current, msg);
+        if (identityRequest) {
+          await current.sendMessage(remoteJid, { text: identidadePrivada([remoteJid, remoteJidAlt]) });
+        } else {
+          await handleGroup(current, msg);
+        }
       } catch (error) {
         logger.error({ err: error }, 'Erro ao processar mensagem de grupo');
         if (isCommand) {
