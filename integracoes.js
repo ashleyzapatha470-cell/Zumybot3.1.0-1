@@ -193,23 +193,17 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     });
     if (artist) query.set('artist_name', artist);
     try {
-      const data = await requestJson('https://api.jamendo.com/v3.0/tracks/?' + query);
-      if (data.headers?.status !== 'success') return reply('O catálogo não aceitou a busca. Confira a configuração do Jamendo.');
-      const tracks = (data.results || []).filter(track =>
-        track.audiodownload_allowed === true && jamendoMediaUrl(track.audiodownload));
-      const normalize = value => String(value || '').trim().toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
-      const track = tracks.find(item => normalize(item.name) === normalize(title)) || tracks[0];
-      if (!track) return reply('Nenhuma faixa com download autorizado nesse catálogo. Tente o nome exato ou NOME | ARTISTA.');
-      const audio = await downloadJamendo(track.audiodownload);
-      const source = jamendoMediaUrl(track.shareurl) ? '\n' + track.shareurl : '';
-      const license = /^https:\/\/creativecommons\.org\//.test(track.license_ccurl || '') ? '\nLicença: ' + track.license_ccurl : '';
+      (track.license_ccurl || '') ? '\nLicença: ' + track.license_ccurl : '';
       await reply('🎵 ' + track.name + ' — ' + track.artist_name + source + license);
       return await send(audio);
     } catch (error) {
       logger.warn({ err: error.message }, 'Falha ao buscar áudio por nome');
       return reply('Não consegui baixar essa faixa do catálogo agora.');
     }
+  }  } finally {
+    await rm(folder, { recursive: true, force: true });
   }
+}
 
   async function playAudio({ arg, reply, send }) {
     if (!arg) return reply('Use !play NOME DA MÚSICA ou !p NOME | ARTISTA. Um link direto MP3 ou M4A também funciona.');
