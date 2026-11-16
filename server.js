@@ -11,6 +11,7 @@ const port=Number(process.env.PORT||3000);
 const folder=process.env.SESSION_DIR||'./session';mkdirSync(folder,{recursive:true});
 const adminToken=process.env.ADMIN_TOKEN;
 let status='iniciando',sock=null,qr=null,attempt=0,paused=false;
+let reconnectTimer;
 const logger=pino({level:process.env.LOG_LEVEL||'info'});
 const handleGroup = createGroupHandler({
   folder,
@@ -108,20 +109,47 @@ app.post('/admin/pause',protect,(req,res)=>{
 app.get('/admin/qr',protect,(_req,res)=>res.json({qr:qr||null}));
 app.post('/admin/pair',protect,async(req,res)=>{res.set('Cache-Control','no-store');const number=String(req.body?.number||'').replace(/\D/g,'');if(!/^55\d{10,11}$/.test(number))return res.status(400).json({error:'Informe 55 + DDD + número'});if(status==='conectado')return res.status(409).json({error:'O ZUMY já está conectado ao WhatsApp.'});if(!sock||!qr)return res.status(409).json({error:'O ZUMY ainda não está pronto para parear. Confira o status do bot e tente novamente.'});try{const code=await sock.requestPairingCode(number);res.json({code})}catch(e){logger.error({err:e},'Falha pareamento');res.status(500).json({error:'Não foi possível gerar código; confira os logs'})}});
 app.listen(port,'0.0.0.0',()=>logger.info({port},'ZUMY HTTP iniciado'));
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  const delay = Math.min(30000, 2000 * 2 ** Math.min(attempt++, 4));
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    if (!sock) void startConnection();
+  }, delay);
+}
+
+async function startConnection() {
+  try {
+    await connect();
+  } catch (error) {
+    status = 'aguardando_reconexao';
+    logger.error({ err: error }, 'Falha ao iniciar conexão WhatsApp');
+    scheduleReconnect();
+  }
+}
+
 async function connect(){
   status='conectando';const {state,saveCreds}=await useMultiFileAuthState(folder);
   const current=makeWASocket({auth:state,logger:logger.child({module:'baileys'}),printQRInTerminal:false,markOnlineOnConnect:false, syncFullHistory:false});sock=current;
-  current.ev.on('creds.update',saveCreds);
+  current.ev.on('creds.update', () => {
+    saveCreds().catch(error => logger.error({ err: error }, 'Falha ao salvar sessão WhatsApp'));
+  });
   current.ev.on('connection.update',({connection,lastDisconnect,qr:nextQr})=>{
     if(current!==sock)return;
     if(nextQr){status='aguardando_pareamento';qr=nextQr;logger.info('QR de pareamento disponível')}
     if(connection==='open'){status='conectado';qr=null;attempt=0;logger.info('ZUMY WhatsApp conectado')}
     if(connection==='close'){
-      status='desconectado';qr=null;
+      sock=null;qr=null;
       const code=lastDisconnect?.error?.output?.statusCode;
       logger.warn({code},'Conexão WhatsApp encerrada');
       if(code===DisconnectReason.loggedOut){status='sessao_expirada';logger.error('Sessão expirada: novo pareamento necessário');return}
-      const delay=Math.min(30000,2000*2**Math.min(attempt++,4));setTimeout(()=>{if(sock===current)connect().catch(e=>logger.error({err:e},'Falha reconexão'))},delay);
+      if(code===DisconnectReason.connectionReplaced){
+        status='conexao_substituida';
+        logger.warn('Conexão substituída. Confira se a sessão está aberta em outra instância.');
+        return;
+      }
+      status='aguardando_reconexao';
+      scheduleReconnect();
     }
   });
   current.ev.on('group-participants.update', event => {
@@ -147,4 +175,4 @@ async function connect(){
     }
   });
 }
-connect().catch(e=>{status='erro';logger.error({err:e},'Erro ao iniciar WhatsApp')});
+void startConnection();
