@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { botName, categoryCommands, menu, normalizeCommand, ownerName, ownerNumber, prefix, sections } from './menu.js';
 import { createGames } from './jogos.js';
 import { createIntegrations } from './integracoes.js';
+import { chamouZumy, criarVoz } from './voz.js';
 import { createGroupSettings, extraAdmin } from './config-grupo.js';
 
 const pick = values => values[randomInt(values.length)];
@@ -218,7 +219,7 @@ function parseZoom(phrase = '') {
   return 'menu';
 }
 
-export function createGroupHandler({ folder, logger = console, downloadMedia, restart, env = process.env } = {}) {
+export function createGroupHandler({ folder, logger = console, downloadMedia, restart, env = process.env, generateVoice } = {}) {
   const ownerDigits = String(env.OWNER_NUMBER || ownerNumber).replace(/\D/g, '');
   if (!/^\d{10,15}$/.test(ownerDigits)) throw new Error('OWNER_NUMBER deve conter DDI, DDD e número.');
   const ownerJid = userJid(ownerDigits);
@@ -227,6 +228,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
   const recent = new Map();
   const activeBroadcasts = new Set();
   const lastCommand = new Map();
+  const responderVoz = criarVoz({ env, logger, gerar: generateVoice });
   const games = createGames();
   const integrations = createIntegrations({ downloadMedia, logger, env });
   const declared = new Set(sections.flatMap(section => section.commands
@@ -335,7 +337,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
   const ownCommands = new Set([
     ...ownerCommands, ...Object.keys(rank), ...Object.keys(relation),
     'configurar', 'b', 'ban', 'kick', 'grupo', 'abrirgp', 'fechargp', 'fig', 'sticker', 'toimg',
-    'play', 'p', 'ia', 'perguntar', 'resumir', 'traduzir',
+    'totag', 'play', 'p', 'ia', 'perguntar', 'resumir', 'traduzir',
   ]);
   const outgoing = new Map();
   const pendingReplies = new Set();
@@ -350,15 +352,17 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const request = zoom ? parseZoom(zoom[1]) : text.startsWith(prefix)
       ? text.slice(prefix.length) : '';
     const match = /^([^\s]+)(?:\s+([\s\S]*))?$/u.exec(request);
+    const usaPrefixo = text.startsWith(prefix);
+    const chamadaVoz = !usaPrefixo && !zoom && chamouZumy(text);
     const command = match ? normalizeCommand(match[1]) : '';
     const arg = match?.[2]?.trim() || '';
     if (msg.key.fromMe && (outgoing.has(jid + ':' + msg.key.id) || pendingReplies.has(jid + ':' + text))) return;
-    const send = async message => {
+    const send = async (message, { citar = true } = {}) => {
       const outgoingText = message.text?.trim();
       const marker = outgoingText && jid + ':' + outgoingText;
       if (marker) pendingReplies.add(marker);
       try {
-        const sent = await sock.sendMessage(jid, message, { quoted: msg });
+        const sent = await sock.sendMessage(jid, message, citar ? { quoted: msg } : undefined);
         if (sent?.key?.id) {
           if (outgoing.size >= 512) outgoing.delete(outgoing.keys().next().value);
           outgoing.set(jid + ':' + sent.key.id, true);
@@ -370,7 +374,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     };
     const reply = text => send({ text });
     const menuInfo = { nickname: settings.nickname, user: msg.pushName };
-    if (msg.key.fromMe && !ownCommands.has(command) && !categoryCommands.includes(command) && !Object.hasOwn(basic, command)) return;
+    if (msg.key.fromMe && !usaPrefixo && !chamadaVoz && !ownCommands.has(command) && !categoryCommands.includes(command) && !Object.hasOwn(basic, command)) return;
     const hasAccessRules = settings.soadm || settings.blockedCommands?.length || settings.cooldown;
     if (!hasAccessRules) {
       if (command === 'menu') return reply(menu(arg, menuInfo));
@@ -381,7 +385,10 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
       (Object.hasOwn(flags, name) || name.startsWith('anti') || name === 'maxChars'));
     const automatic = settings.autosticker || (settings.atodos && /^@all(?:\s|$)/i.test(text));
     const knownCommand = declared.has(command) || categoryCommands.includes(command) || command === 'membros' || Object.hasOwn(basic, command);
-    if (!activeSecurity && !automatic && !knownCommand) return;
+    if (!activeSecurity && !automatic && !knownCommand && !usaPrefixo && !chamadaVoz) return;
+    // Menus e comandos escritos na conta vinculada são processados só quando previstos.
+    if (msg.key.fromMe && knownCommand && !ownCommands.has(command) &&
+        !categoryCommands.includes(command) && !Object.hasOwn(basic, command)) return;
     const ctx = (content.extendedTextMessage || content.imageMessage || content.videoMessage || content.documentMessage)?.contextInfo;
     const mentions = ctx?.mentionedJid || [];
     const botIds = [sock.user?.id, sock.user?.lid, sock.user?.phoneNumber,
@@ -421,6 +428,18 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const members = participants.filter(member => member !== bot && member.id).map(member => member.id);
     if (!command && settings.atodos && isAdmin && /^@all(?:\s|$)/i.test(text)) {
       return send({ text: text.slice(4).trim() || 'Atenção, pessoal!', mentions: members });
+    }
+    if (chamadaVoz && (!settings.soadm || isAdmin)) return responderVoz({ jid, send, reply });
+    if (usaPrefixo && !knownCommand) {
+      const exemplos = {
+        configurar: '!configurar', play: '!play lista', fig: '!fig (responda a uma foto)',
+        ia: '!ia Diga olá ao grupo', totag: '!totag Atenção, pessoal!', ban: '!ban @participante',
+        msgtemp: '!msgtemp 24h', reiniciar: '!reiniciar',
+      };
+      const candidato = Object.keys(exemplos).find(nome => command.length >= 2 && nome.startsWith(command));
+      const nome = match?.[1]?.slice(0, 40);
+      return reply('Comando inválido: ' + prefix + (nome || '') + '. Exemplo: ' +
+        (exemplos[candidato] || '!menu para ver os comandos. Experimente !play lista'));
     }
     if (!knownCommand && !settings.autosticker) return;
     if (!isAdmin && knownCommand && (settings.blockedCommands?.includes(command) ||
@@ -473,7 +492,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const mediaMessage = isMedia(content) || !isMedia(quotedContent) ? msg : quoted;
     const source = contentOf(mediaMessage.message);
     const context = {
-      sock, jid, arg, reply, send, meta, actor, isAdmin, target: targetMember?.id || target, targetPhone, settings, quotedKey, source,
+      sock, jid, arg, reply, send, meta, actor, isAdmin, botAdmin, commandKey: msg.key, target: targetMember?.id || target, targetPhone, settings, quotedKey, source,
       members,
       admins: participants.filter(member => member.admin === 'admin' || member.admin === 'superadmin' ||
         member.isAdmin === true || member.isSuperAdmin === true).map(member => member.id).filter(Boolean),

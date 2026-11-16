@@ -147,6 +147,23 @@ async function downloadJamendo(url) {
   throw new Error('O catálogo retornou muitos redirecionamentos.');
 }
 
+const localTracks = [
+  ['opera_o_anti_z_gavi_o.mp3', ['opera', 'opera o anti z gavi o']],
+  ['estou_apaixonado.m4a', ['estou apaixonado', 'daniel', 'estoy enamorado']],
+  ['interrogacoes.m4a', ['interrogacoes', 'all star brasil']],
+  ['AUD-20261016-WA0254.mp3', ['produção dj tk', 'wa0254', 'aud 20261016 wa0254']],
+  ['viu_mulher_mudou_o_tom.mp3', ['viu mulher mudou o tom']],
+  ['minha_princesa_complicada.mp3', ['minha princesa complicada']],
+  ['lunes_que_sabe_a_viernes.mp3', ['lunes que sabe a viernes']],
+  ['la_diabla_mexicana.mp3', ['la diabla mexicana']],
+];
+
+const trackName = value => value.trim().toLowerCase().normalize('NFD')
+  .replace(/\p{M}/gu, '').replace(/\.(mp3|m4a)$/i, '').replace(/[_|–—-]/g, ' ')
+  .replace(/\s+/g, ' ').trim();
+const fileByName = new Map(localTracks.flatMap(([file, aliases]) =>
+  [file, ...aliases].map(alias => [trackName(alias), file])));
+
 export function createIntegrations({ downloadMedia, logger = console, env = process.env } = {}) {
   async function media(context, command) {
     const { arg, source, download, reply, send } = context;
@@ -213,25 +230,28 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     }
   }
 
-  async function playLocal({ reply, send }) {
-    const file = new URL('./opera_o_anti_z_gavi_o.mp3', import.meta.url);
+  async function playLocal({ reply, send }, filename) {
+    const file = new URL('./' + filename, import.meta.url);
     try {
       const info = await stat(file);
       if (!info.isFile() || !info.size || info.size > maxAudioBytes) {
-        return reply('O arquivo local precisa ser um MP3 de até 12 MB.');
+        return reply('O arquivo local precisa ser um MP3 ou M4A de até 12 MB.');
       }
       const audio = await readFile(file);
-      return await send({ audio, mimetype: 'audio/mpeg', ptt: false });
+      return await send({ audio, mimetype: filename.endsWith('.m4a') ? 'audio/mp4' : 'audio/mpeg', ptt: false });
     } catch (error) {
-      logger.warn({ code: error.code }, 'Falha ao enviar MP3 local');
-      return reply('Não consegui enviar o MP3 local. Confira se ele está na raiz do projeto publicado.');
+      logger.warn({ code: error.code }, 'Falha ao enviar áudio local');
+      return reply('Não consegui enviar o áudio local. Confira se ele está na raiz do projeto publicado.');
     }
   }
 
   async function playAudio({ arg, reply, send }) {
-    if (!arg) return reply('Use !play opera para o MP3 cadastrado, !play verão para o Audius ou !play LINK para um arquivo direto.');
-    const name = arg.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/\s*\|\s*/g, ' ').replace(/\s+/g, ' ').trim();
-    if (['opera', 'opera o anti z gavi o', 'opera_o_anti_z_gavi_o.mp3'].includes(name)) return playLocal({ reply, send });
+    if (!arg || trackName(arg) === 'lista') {
+      return reply('🎵 Áudios cadastrados\n' + localTracks.map(([, [name]]) => '!play ' + name).join('\n'));
+    }
+    const name = trackName(arg);
+    const localFile = fileByName.get(name);
+    if (localFile) return playLocal({ reply, send }, localFile);
     const audiusLink = 'https://audius.co/BellMarques/ver%C3%A3o';
     if (['verao', 'verao bell marques'].includes(name) || arg === audiusLink) {
       return reply('🎵 VERÃO — Bell Marques\n' + audiusLink);

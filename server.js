@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys';
 import { createGroupHandler } from './grupos.js';
 import { prefix } from './menu.js';
+import { chamouZumy } from './voz.js';
 
 const app=express();app.use(express.json());
 const port=Number(process.env.PORT||3000);
@@ -100,7 +101,7 @@ app.get('/parear', (_req, res) => {
 </script>
 </html>`);
 });
-app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'comandos-v2'}));
+app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'comandos-v3'}));
 app.get('/admin/status',protect,(_req,res)=>res.json({status,paused,qrDisponivel:!!qr}));
 app.post('/admin/pause',protect,(req,res)=>{
   if(typeof req.body?.paused!=='boolean')return res.status(400).json({error:'Informe paused como true ou false'});
@@ -181,9 +182,10 @@ async function connect(){
       if (!msg?.message || !remoteJid?.endsWith('@g.us')) continue;
       const text = commandText(msg.message);
       const isCommand = text.startsWith(prefix) || /^zoom(?:$|[\s,:])/i.test(text);
-      if (type === 'append' || (fromMe && isCommand)) {
+      const hasTrigger = isCommand || chamouZumy(text);
+      if (type === 'append' || (fromMe && hasTrigger)) {
         const sentAt = Number(msg.messageTimestamp) * 1000;
-        if (!fromMe || !isCommand || !connectedAt || !Number.isFinite(sentAt) ||
+        if (!fromMe || !hasTrigger || !connectedAt || !Number.isFinite(sentAt) ||
             sentAt < Math.max(connectedAt - 999, now - 30_000) || sentAt > now + 10_000) continue;
       }
       const key = id && remoteJid + ':' + id;

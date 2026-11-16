@@ -38,7 +38,7 @@ function panel(title, lines) {
 }
 const switches = new Set((sections[11].commands).concat(['antilinkgp', 'antilinkhard', 'antiflod',
   'limitecaracteres', 'antipalavra', 'bemvindo', 'bemvindo2', 'autosticker', 'atodos', 'modobrincadeira', 'soadm', 'advertenciaauto']));
-const usage = { play: ' NOME', p: ' NOME', apelido: ' [nome ou reset]', enquete: ' Pergunta | Opção 1 | Opção 2' };
+const usage = { play: ' NOME ou lista', p: ' NOME ou lista', totag: ' MENSAGEM', apelido: ' [nome ou reset]', enquete: ' Pergunta | Opção 1 | Opção 2' };
 
 function category(section) {
   return panel(section.icon + ' ' + section.title, section.commands.map(command => {

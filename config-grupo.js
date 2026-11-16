@@ -148,7 +148,20 @@ export function createGroupSettings({ config, integrations, known, logger }) {
     },
     admins: ({ admins, mention, reply }) => admins.length ? mention('🛡️ Administradores:\n', admins, true) : reply('Nenhum administrador identificado.'),
     adms: ({ admins, mention, reply }) => admins.length ? mention('🚨 Administradores, atenção:\n', admins) : reply('Nenhum administrador identificado.'),
-    totag: ({ arg, members, mention }) => mention((arg || 'Atenção, pessoal!') + '\n', members),
+    totag: async ({ arg, members, reply, send, sock, jid, quotedKey, quotedText, commandKey, botAdmin }) => {
+      const texto = arg || quotedText;
+      if (!texto) return reply('Use !totag Atenção, pessoal! ou responda ao aviso com !totag.');
+      if (botAdmin === false && [quotedKey, commandKey].some(key => key && !key.fromMe)) {
+        return reply('O ZUMY precisa ser admin para apagar a mensagem. Exemplo: responda ao aviso com !totag.');
+      }
+      await send({ text: texto, mentions: members }, { citar: false });
+      const keys = new Map([quotedKey, commandKey].filter(key => key?.id).map(key => [key.id, key]));
+      const results = await Promise.allSettled([...keys.values()].map(key =>
+        Promise.resolve().then(() => sock.sendMessage(jid, { delete: key }))));
+      if (results.some(result => result.status === 'rejected')) {
+        return send({ text: 'O aviso foi enviado, mas o WhatsApp recusou apagar uma das mensagens.' }, { citar: false });
+      }
+    },
     hidetag: ({ arg, members, reply, send }) => arg ? send({ text: arg, mentions: members }) : reply('Use !hidetag SUA MENSAGEM.'),
     del: async ({ sock, jid, quotedKey, reply }) => quotedKey
       ? sock.sendMessage(jid, { delete: quotedKey }) : reply('Responda à mensagem com !del.'),
