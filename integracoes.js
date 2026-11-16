@@ -77,15 +77,7 @@ async function confirmMp3(audio) {
     throw new Error('O arquivo recebido do Jamendo não contém áudio MP3 válido.');
   } finally {
     await rm(folder, { recursive: true, force: true });
-  }const downloadUrl = new URL('https://api.jamendo.com/v3.0/tracks/file/');
-downloadUrl.search = new URLSearchParams({
-  client_id: query.get('client_id'),
-  id: String(track.id),
-  action: 'download',
-  audioformat: 'mp32',
-}).toString();
-
- = await downloadJamendo(downloadUrl.href);
+  }
 }
 
 async function readAudio(response, { allowGenericMp3 = false } = {}) {
@@ -193,17 +185,23 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     });
     if (artist) query.set('artist_name', artist);
     try {
-      (track.license_ccurl || '') ? '\nLicença: ' + track.license_ccurl : '';
+      const data = await requestJson('https://api.jamendo.com/v3.0/tracks/?' + query);
+      if (data.headers?.status !== 'success') return reply('O catálogo não aceitou a busca. Confira a configuração do Jamendo.');
+      const tracks = (data.results || []).filter(track =>
+        track.audiodownload_allowed === true && jamendoMediaUrl(track.audiodownload));
+      const normalize = value => String(value || '').trim().toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
+      const track = tracks.find(item => normalize(item.name) === normalize(title)) || tracks[0];
+      if (!track) return reply('Nenhuma faixa com download autorizado nesse catálogo. Tente o nome exato ou NOME | ARTISTA.');
+      const audio = await downloadJamendo(track.audiodownload);
+      const source = jamendoMediaUrl(track.shareurl) ? '\n' + track.shareurl : '';
+      const license = /^https:\/\/creativecommons\.org\//.test(track.license_ccurl || '') ? '\nLicença: ' + track.license_ccurl : '';
       await reply('🎵 ' + track.name + ' — ' + track.artist_name + source + license);
       return await send(audio);
     } catch (error) {
       logger.warn({ err: error.message }, 'Falha ao buscar áudio por nome');
       return reply('Não consegui baixar essa faixa do catálogo agora.');
     }
-  }  } finally {
-    await rm(folder, { recursive: true, force: true });
   }
-}
 
   async function playAudio({ arg, reply, send }) {
     if (!arg) return reply('Use !play NOME DA MÚSICA ou !p NOME | ARTISTA. Um link direto MP3 ou M4A também funciona.');
@@ -287,4 +285,4 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     ...['buscar', 'musica', 'letra'].map(command => [command, context => music(context, command)]),
     ...['ia', 'perguntar', 'resumir', 'traduzir'].map(command => [command, context => ai(context, command)]),
   ]);
-}
+  }
