@@ -7,7 +7,7 @@ export const sections = [
   ['PRINCIPAL', '📋', 'menu|ajuda|dono|ping|status|infobot|regras'],
   ['ADMINISTRAÇÃO', '👑', 'b|d|ban|kick|promover|rebaixar|grupo a|grupo f|abrirgp|fechargp|marcar|linkgp|add'],
   ['SEGURANÇA', '🛡️', 'antilink on|antilink off|antispam on|antispam off|antivizu on|antivizu off|antivizu status|antigaviao on|antigaviao off|detectargado on|detectargado off|zoeira on|zoeira off'],
-  ['RANKINGS', '🤣', 'rankcorno|rankmoia|rankcaloteiro|rankgaviao|rankgado|rankbebado|rankfofoqueiro|rankpreguicoso|rankdoido|rankciumento|rankpegador|ranksumido|rankchorao|ranksortudo|rankazarado'],
+  ['RANKINGS', '🤣', 'rankcorno|rankmoia|ranknoia|rankcaloteiro|rankgaviao|rankgado|rankbebado|rankfofoqueiro|rankpreguicoso|rankdoido|rankciumento|rankpegador|ranksumido|rankchorao|ranksortudo|rankazarado'],
   ['RELACIONAMENTOS', '❤️', 'ship|casal|compatibilidade|apaixonado|crush|casamento|divorcio|beijo|namorar|quemmeama|quemmetraiu'],
   ['JOGOS', '🎮', 'jogos|verdade|desafio|verdadeoudesafio|roleta|dado|parouimpar|pedra|papel|tesoura|adivinhar|quiz|forca|sorteio|bingo'],
   ['ZOEIRAS', '😂', 'queme|eununca|confissao|segredo|azar|sorte|previsao|horoscopo|testedeamor|testedebeleza|testedeloucura|quemseria|duelo|batalha'],
@@ -17,7 +17,7 @@ export const sections = [
   ['PROPRIETÁRIO', '⚙️', 'reiniciar|bloquear|desbloquear|broadcast|grupos'],
   ['ANTI-CONTEÚDO', '🚫', 'antiimg|antivideo|antiaudio|antisticker|antiloc|anticontato|antidoc|anticatalogo|antinotas|antipayment|antienquete'],
   ['ANTI-SPAM E SEGURANÇA', '🛡️', 'antilinkgp|antilinkhard|antiflod|limitecaracteres|antipalavra|addpalavra|delpalavra|listapalavra'],
-  ['CONFIGURAÇÃO DO GRUPO', '⚙️', 'bemvindo|bemvindo2|legendabv|legendasaiu|legendabv2|legendasaiu2|legendasaiureset|legendasaiu2reset|autosticker|atodos|modobrincadeira|soadm|liberar|revogar|liberados|cooldown|limitecmd|tempocmd|msgtemp|advertir|advertencia|advertenciaauto|apelido'],
+  ['CONFIGURAÇÃO DO GRUPO', '⚙️', 'configurar|bemvindo|bemvindo2|legendabv|legendasaiu|legendabv2|legendasaiu2|legendasaiureset|legendasaiu2reset|autosticker|atodos|modobrincadeira|soadm|liberar|revogar|liberados|cooldown|limitecmd|tempocmd|msgtemp|advertir|advertencia|advertenciaauto|apelido'],
   ['FERRAMENTAS DE ADMINISTRAÇÃO', '👮', 'nomegp|admins|adms|totag|hidetag|del|blockcmdgp|unblockcmdgp|listbcmdgp|enquete|sorteionumero'],
   ['ATALHOS ZOOM', '🐉', 'zoom abre o grupo|zoom fecha o grupo|zoom remova esse|zoom marca todo mundo|zoom baixe música NOME|zoom forme um casal|zoom que horas são|zoom quantos membros tem aqui|zoom enquete: X ou Y'],
 ].map(([title, icon, commands]) => ({ title, icon, commands: commands.split('|') }));

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -26,16 +26,18 @@ async function convert({ data, text, animated = false, toImage = false }) {
       args.push('-vf', filter);
     } else {
       await writeFile(input, data);
-      args.push('-i', input);
+      args.push('-protocol_whitelist', 'file', '-i', input);
       if (!toImage) {
-        args.push('-vf', 'fps=10,scale=512:512:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000');
+        args.push('-vf', (animated ? 'fps=10,' : '') + 'scale=512:512:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000');
       }
     }
     if (toImage || !animated) args.push('-frames:v', '1');
     else args.push('-t', text ? '2' : '5', '-loop', '0');
     if (!toImage) args.push('-c:v', animated ? 'libwebp_anim' : 'libwebp', '-quality', '65');
     await ffmpeg('ffmpeg', [...args, '-an', output], { cwd: folder, timeout: 20000 });
-    return await readFile(output);
+    const buffer = await readFile(output);
+    if (!buffer.length) throw new Error('FFmpeg não gerou um arquivo de saída.');
+    return buffer;
   } finally {
     await rm(folder, { recursive: true, force: true });
   }
@@ -74,19 +76,19 @@ async function confirmMp3(audio) {
     if (stdout.trim() !== 'mp3') throw new Error('Codec diferente de MP3.');
   } catch (error) {
     if (error.code === 'ENOENT') throw error;
-    throw new Error('O arquivo recebido do Jamendo não contém áudio MP3 válido.');
+    throw new Error('O arquivo recebido não contém áudio MP3 válido.');
   } finally {
     await rm(folder, { recursive: true, force: true });
   }
 }
 
-async function readAudio(response, { allowGenericMp3 = false } = {}) {
+async function readAudio(response, { allowGenericMp3 = false, allowVideo = false } = {}) {
   const contentType = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() || '';
-  const knownType = audioTypes.get(contentType);
+  const knownType = allowVideo && contentType === 'video/mp4' ? contentType : audioTypes.get(contentType);
   const checkMp3 = !knownType && allowGenericMp3 && genericDownloadTypes.has(contentType);
   if ((!knownType && !checkMp3) || !response.body) {
     await response.body?.cancel();
-    throw new Error('O endereço precisa fornecer um arquivo MP3 ou M4A. Tipo recebido: ' +
+    throw new Error('O endereço precisa fornecer um arquivo ' + (allowVideo ? 'MP3, M4A ou MP4' : 'MP3 ou M4A') + '. Tipo recebido: ' +
       (contentType.slice(0, 80) || 'não informado') + '.');
   }
   if (Number(response.headers.get('content-length')) > maxAudioBytes) {
@@ -104,6 +106,7 @@ async function readAudio(response, { allowGenericMp3 = false } = {}) {
   if (!length) throw new Error('O arquivo de áudio está vazio.');
   const audio = Buffer.concat(chunks, length);
   if (checkMp3) await confirmMp3(audio);
+  if (knownType === 'video/mp4') return { video: audio, mimetype: knownType };
   return { audio, mimetype: knownType || 'audio/mpeg', ptt: false };
 }
 
@@ -210,11 +213,32 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     }
   }
 
+  async function playLocal({ reply, send }) {
+    const file = new URL('./opera_o_anti_z_gavi_o.mp3', import.meta.url);
+    try {
+      const info = await stat(file);
+      if (!info.isFile() || !info.size || info.size > maxAudioBytes) {
+        return reply('O arquivo local precisa ser um MP3 de até 12 MB.');
+      }
+      const audio = await readFile(file);
+      return await send({ audio, mimetype: 'audio/mpeg', ptt: false });
+    } catch (error) {
+      logger.warn({ code: error.code }, 'Falha ao enviar MP3 local');
+      return reply('Não consegui enviar o MP3 local. Confira se ele está na raiz do projeto publicado.');
+    }
+  }
+
   async function playAudio({ arg, reply, send }) {
-    if (!arg) return reply('Use !play NOME DA MÚSICA ou !p NOME | ARTISTA. Um link direto MP3 ou M4A também funciona.');
+    if (!arg) return reply('Use !play opera para o MP3 cadastrado, !play verão para o Audius ou !play LINK para um arquivo direto.');
+    const name = arg.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/\s*\|\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    if (['opera', 'opera o anti z gavi o', 'opera_o_anti_z_gavi_o.mp3'].includes(name)) return playLocal({ reply, send });
+    const audiusLink = 'https://audius.co/BellMarques/ver%C3%A3o';
+    if (['verao', 'verao bell marques'].includes(name) || arg === audiusLink) {
+      return reply('🎵 VERÃO — Bell Marques\n' + audiusLink);
+    }
     const origin = audioOrigin(arg);
     if (!origin) {
-      if (/^\w+:\/\//.test(arg)) return reply('Use um link HTTPS direto de um MP3 ou M4A.');
+      if (/^\w+:\/\//.test(arg)) return reply('Use um link HTTPS direto de um MP3, M4A ou MP4.');
       return playByName({ arg, reply, send });
     }
     const approvedOrigin = audioOrigin(env.MUSIC_AUDIO_ORIGIN);
@@ -230,7 +254,7 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
         await response.body?.cancel();
         return reply('O servidor de áudio retornou HTTP ' + response.status + '.');
       }
-      const audio = await readAudio(response);
+      const audio = await readAudio(response, { allowGenericMp3: true, allowVideo: true });
       return await send(audio);
     } catch (error) {
       logger.warn({ err: error.message }, 'Falha ao enviar áudio');
@@ -261,7 +285,7 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     const input = arg || quotedText;
     if (!input) return reply('Envie um texto com ' + prefix + command + ' ou responda a uma mensagem.');
     if (input.length > 6000) return reply('Envie até 6.000 caracteres por vez.');
-    const key = env.OPENAI_API_KEY;
+    const key = env.OPENAI_API_KEY?.trim();
     if (!key) return reply('A IA está desativada. O dono precisa configurar OPENAI_API_KEY no Render.');
     const prompts = {
       ia: 'Responda de forma útil em português do Brasil.',
@@ -270,19 +294,32 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
       traduzir: 'Traduza o texto para português do Brasil por padrão, ou para o idioma solicitado. Retorne apenas a tradução.',
     };
     try {
-      const result = await requestJson('https://api.openai.com/v1/chat/completions', {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        signal: AbortSignal.timeout(15000),
         method: 'POST',
         headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: env.OPENAI_MODEL || 'gpt-4.1-mini',
+          model: env.OPENAI_MODEL?.trim() || 'gpt-4.1-mini',
           messages: [{ role: 'system', content: prompts[command] }, { role: 'user', content: input }],
           max_completion_tokens: 500,
         }),
       });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const code = result.error?.code;
+        logger.warn({ status: response.status, code, requestId: response.headers.get('x-request-id') }, 'Falha na integração de IA');
+        if (code === 'insufficient_quota') return reply('A API da OpenAI está sem cota. O dono precisa conferir o faturamento.');
+        if (response.status === 401) return reply('A OpenAI recusou a chave. O dono precisa conferir OPENAI_API_KEY no Render.');
+        if (code === 'model_not_found' || response.status === 403) {
+          return reply('A OpenAI recusou o acesso ao modelo. O dono precisa conferir OPENAI_MODEL e as permissões da chave.');
+        }
+        if (response.status === 429) return reply('A IA atingiu o limite de requisições. Tente novamente em instantes.');
+        return reply('A OpenAI retornou HTTP ' + response.status + '. Confira os logs do Render.');
+      }
       return reply(result.choices?.[0]?.message?.content?.trim() || 'A IA não retornou uma resposta.');
     } catch (error) {
-      logger.warn({ err: error.message }, 'Falha na integração de IA');
-      return reply('A IA está indisponível agora. Confira a configuração e os logs.');
+      logger.warn({ name: error.name }, 'Falha na integração de IA');
+      return reply('A conexão com a IA falhou ou demorou demais. Tente novamente em instantes.');
     }
   }
 

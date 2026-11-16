@@ -17,7 +17,6 @@ const shuffle = values => {
 };
 const normalizeJid = id => String(id || '').replace(/:\d+(?=@)/, '').replace(/@c\.us$/, '@s.whatsapp.net');
 const userJid = number => number + '@s.whatsapp.net';
-const ownerJid = userJid(ownerNumber);
 const groupJid = id => typeof id === 'string' && id.endsWith('@g.us');
 const identity = member => [member?.id, member?.phoneNumber, member?.lid].filter(Boolean).map(normalizeJid);
 const chatText = message => message?.conversation || message?.extendedTextMessage?.text ||
@@ -62,7 +61,7 @@ const flags = {
 const ownerCommands = new Set(['reiniciar', 'bloquear', 'desbloquear', 'broadcast', 'grupos']);
 const adminCommands = new Set([
   'b', 'ban', 'kick', 'd', 'promover', 'rebaixar', 'grupo', 'abrirgp', 'fechargp',
-  'marcar', 'linkgp', 'add', ...Object.keys(flags), ...extraAdmin,
+  'marcar', 'linkgp', 'add', 'configurar', ...Object.keys(flags), ...extraAdmin,
 ]);
 const basic = {
   menu: ({ arg, reply }) => reply(menu(arg)),
@@ -155,7 +154,7 @@ function groupActions() {
   };
 }
 
-function ownerActions(restart) {
+function ownerActions(restart, ownerJid) {
   const block = action => async ({ arg, targetPhone, sock, reply }) => {
     const number = arg.replace(/^\+/, '');
     const target = /^\d{10,15}$/.test(number) ? userJid(number) : targetPhone;
@@ -168,8 +167,9 @@ function ownerActions(restart) {
   return {
     reiniciar: async ({ arg, reply }) => {
       if (arg !== 'confirmar') return reply('Para reiniciar o processo, use !reiniciar confirmar.');
+      if (typeof restart !== 'function') return reply('O servidor ainda não forneceu a função de reinício ao bot.');
       await reply('Reiniciando o ZUMY…');
-      restart();
+      return restart();
     },
     bloquear: block('block'),
     desbloquear: block('unblock'),
@@ -218,7 +218,11 @@ function parseZoom(phrase = '') {
   return 'menu';
 }
 
-export function createGroupHandler({ folder, logger = console, downloadMedia, restart, env } = {}) {
+export function createGroupHandler({ folder, logger = console, downloadMedia, restart, env = process.env } = {}) {
+  const ownerDigits = String(env.OWNER_NUMBER || ownerNumber).replace(/\D/g, '');
+  if (!/^\d{10,15}$/.test(ownerDigits)) throw new Error('OWNER_NUMBER deve conter DDI, DDD e número.');
+  const ownerJid = userJid(ownerDigits);
+  const ownerLid = /^\d+@lid$/.test(env.OWNER_LID || '') ? env.OWNER_LID : undefined;
   const config = readSettings(folder);
   const recent = new Map();
   const activeBroadcasts = new Set();
@@ -272,7 +276,8 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     ...basic,
     regras: ({ meta, reply }) => reply(meta.desc || 'Este grupo não tem regras na descrição.'),
     ...groupActions(), ...security, ...rank, ...relation, ...games, ...jokeActions, ...integrations,
-    ...ownerActions(restart),
+    ...ownerActions(restart, ownerJid),
+    configurar: ({ reply, settings }) => reply(menu('configuracao', { nickname: settings.nickname })),
     ...groupSettings.commands,
     p: integrations.play,
   };
@@ -326,6 +331,15 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     return false;
   }
 
+  // Reconhece comandos digitados no telefone vinculado, sem executar respostas do bot.
+  const ownCommands = new Set([
+    ...ownerCommands, ...Object.keys(rank), ...Object.keys(relation),
+    'configurar', 'b', 'ban', 'kick', 'grupo', 'abrirgp', 'fechargp', 'fig', 'sticker', 'toimg',
+    'play', 'p', 'ia', 'perguntar', 'resumir', 'traduzir',
+  ]);
+  const outgoing = new Map();
+  const pendingReplies = new Set();
+
   async function handleGroup(sock, msg) {
     const jid = msg.key?.remoteJid;
     if (!groupJid(jid) || !msg.message) return;
@@ -338,10 +352,25 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const match = /^([^\s]+)(?:\s+([\s\S]*))?$/u.exec(request);
     const command = match ? normalizeCommand(match[1]) : '';
     const arg = match?.[2]?.trim() || '';
-    const send = message => sock.sendMessage(jid, message, { quoted: msg });
+    if (msg.key.fromMe && (outgoing.has(jid + ':' + msg.key.id) || pendingReplies.has(jid + ':' + text))) return;
+    const send = async message => {
+      const outgoingText = message.text?.trim();
+      const marker = outgoingText && jid + ':' + outgoingText;
+      if (marker) pendingReplies.add(marker);
+      try {
+        const sent = await sock.sendMessage(jid, message, { quoted: msg });
+        if (sent?.key?.id) {
+          if (outgoing.size >= 512) outgoing.delete(outgoing.keys().next().value);
+          outgoing.set(jid + ':' + sent.key.id, true);
+        }
+        return sent;
+      } finally {
+        if (marker) pendingReplies.delete(marker);
+      }
+    };
     const reply = text => send({ text });
     const menuInfo = { nickname: settings.nickname, user: msg.pushName };
-    if (msg.key.fromMe && command !== 'menu' && !categoryCommands.includes(command) && !Object.hasOwn(basic, command)) return;
+    if (msg.key.fromMe && !ownCommands.has(command) && !categoryCommands.includes(command) && !Object.hasOwn(basic, command)) return;
     const hasAccessRules = settings.soadm || settings.blockedCommands?.length || settings.cooldown;
     if (!hasAccessRules) {
       if (command === 'menu') return reply(menu(arg, menuInfo));
@@ -355,35 +384,37 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     if (!activeSecurity && !automatic && !knownCommand) return;
     const ctx = (content.extendedTextMessage || content.imageMessage || content.videoMessage || content.documentMessage)?.contextInfo;
     const mentions = ctx?.mentionedJid || [];
-    const ids = [msg.key.participant, msg.key.participantAlt].filter(Boolean).map(normalizeJid);
+    const botIds = [sock.user?.id, sock.user?.lid, sock.user?.phoneNumber,
+      sock.authState?.creds?.me?.id, sock.authState?.creds?.me?.lid].filter(Boolean).map(normalizeJid);
+    const ids = msg.key.fromMe ? botIds : [msg.key.participant, msg.key.participantAlt].filter(Boolean).map(normalizeJid);
     const meta = await sock.groupMetadata(jid);
     const participants = meta.participants || [];
     const mapper = sock.signalRepository?.lidMapping;
-    async function findMember(identifiers) {
-      const existing = participants.find(member => identity(member).some(id => identifiers.includes(id)));
-      if (existing || !mapper) return existing;
-      const aliases = [];
+    async function aliasesFor(identifiers) {
+      const aliases = new Set(identifiers);
+      if (!mapper) return [...aliases];
       for (const id of identifiers) {
         const resolve = id.endsWith('@lid') ? mapper.getPNForLID : mapper.getLIDForPN;
         if (typeof resolve !== 'function') continue;
         try {
           const alias = normalizeJid(await resolve.call(mapper, id));
-          if (alias) aliases.push(alias);
+          if (alias) aliases.add(alias);
         } catch {
-          // A ausência de um vínculo confirmado não concede permissões.
+          // Sem vínculo confirmado, a identidade original é a única válida.
         }
       }
-      return participants.find(member => identity(member).some(id => aliases.includes(id)));
+      return [...aliases];
     }
-    const sender = await findMember(ids);
+    const findMember = identifiers => participants.find(member => identity(member).some(id => identifiers.includes(id)));
+    const sender = findMember(ids) || findMember(await aliasesFor(ids));
     const actor = sender?.id || ids[0];
-    const isOwner = [...ids, ...identity(sender)].includes(ownerJid);
-    const senderIds = [...ids, ...identity(sender)];
+    let senderIds = [...new Set([...ids, ...identity(sender)])];
+    if (ownerCommands.has(command) && !senderIds.includes(ownerJid)) senderIds = await aliasesFor(senderIds);
+    const isOwner = senderIds.includes(ownerJid) || Boolean(ownerLid && senderIds.includes(ownerLid));
     const isGroupOwner = [meta.owner, meta.ownerPn].some(id => id && senderIds.includes(normalizeJid(id)));
     const isAdmin = isOwner || isGroupOwner || ['admin', 'superadmin'].includes(sender?.admin) ||
       sender?.isAdmin === true || sender?.isSuperAdmin === true;
-    const botIds = [sock.user?.id, sock.user?.lid, sock.user?.phoneNumber, sock.authState?.creds?.me?.lid].filter(Boolean).map(normalizeJid);
-    const bot = await findMember(botIds);
+    const bot = msg.key.fromMe ? sender : findMember(botIds) || findMember(await aliasesFor(botIds));
     const botAdmin = bot ? ['admin', 'superadmin'].includes(bot.admin) ||
       bot.isAdmin === true || bot.isSuperAdmin === true : undefined;
     if (activeSecurity && await moderate({ sock, msg, jid, actor, text, content, settings, isAdmin, botAdmin, mentions, reply })) return;
@@ -414,9 +445,13 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     logger.info({ command, jid }, 'Comando de grupo');
     if (ownerCommands.has(command) && !isOwner) return reply('Comando exclusivo do dono do ZUMY.');
     if (adminCommands.has(command) && !isAdmin) return reply('Comando exclusivo dos administradores.');
+    if (botAdmin === false && ['b', 'ban', 'kick', 'abrirgp', 'fechargp', 'grupo'].includes(command)) {
+      return reply('Torne o número conectado ao ZUMY administrador deste grupo para executar esse comando.');
+    }
     if (settings.zoeira === false && Object.hasOwn(jokeActions, command)) return reply('Zoeiras desativadas neste grupo.');
     const target = mentions[0] || ctx?.participant;
-    const targetMember = participants.find(member => identity(member).includes(normalizeJid(target)));
+    const targetIds = target ? [normalizeJid(target)] : [];
+    const targetMember = findMember(targetIds) || (target ? findMember(await aliasesFor(targetIds)) : undefined);
     const targetPhone = [normalizeJid(target), ...identity(targetMember)].find(id => /^\d+@s\.whatsapp\.net$/.test(id));
     const quotedKey = ctx?.stanzaId && ctx.participant ? {
       remoteJid: jid,
@@ -425,7 +460,10 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
       fromMe: [...botIds, ...identity(bot)].includes(normalizeJid(ctx.participant)),
     } : null;
     const quoted = quotedKey && ctx.quotedMessage ? { key: quotedKey, message: ctx.quotedMessage } : null;
-    const source = contentOf(quoted?.message || msg.message);
+    const isMedia = message => Boolean(message.imageMessage || message.videoMessage || message.stickerMessage);
+    const quotedContent = contentOf(quoted?.message);
+    const mediaMessage = isMedia(content) || !isMedia(quotedContent) ? msg : quoted;
+    const source = contentOf(mediaMessage.message);
     const context = {
       sock, jid, arg, reply, send, meta, actor, isAdmin, target: targetMember?.id || target, targetPhone, settings, quotedKey, source,
       members,
@@ -433,7 +471,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
         member.isAdmin === true || member.isSuperAdmin === true).map(member => member.id).filter(Boolean),
       update: changes => config.save(jid, { ...config.get(jid), ...changes }),
       quotedText: chatText(contentOf(quoted?.message)),
-      download: download => download(quoted || msg),
+      download: download => download(mediaMessage),
       mention: (prefix, ids, numbered = false) => send({
         text: prefix + ids.map((id, i) => (numbered ? (i + 1) + '. ' : '') + '@' + normalizeJid(id).split('@')[0]).join(numbered ? '\n' : ' '),
         mentions: ids,
