@@ -85,7 +85,7 @@ downloadUrl.search = new URLSearchParams({
   audioformat: 'mp32',
 }).toString();
 
-const audio = await downloadJamendo(downloadUrl.href);
+ = await downloadJamendo(downloadUrl.href);
 }
 
 async function readAudio(response, { allowGenericMp3 = false } = {}) {
