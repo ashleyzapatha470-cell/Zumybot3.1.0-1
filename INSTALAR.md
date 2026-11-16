@@ -1,24 +1,23 @@
-# Atualização dos comandos do Zumybot3.1.0
+# Zumybot · Painel v9
 
-1. Extraia este ZIP. No GitHub, substitua `server.js`, `grupos.js`, `integracoes.js` e `menu.js` na branch `main`. Preserve os demais arquivos do projeto e o MP3 original `opera_o_anti_z_gavi_o.mp3` na raiz.
-2. No Render, em **Environment**, defina `OWNER_NUMBER` com DDI, DDD e número do dono, só dígitos. Se a versão atual do Baileys só identificar o dono por um LID e não tiver o vínculo com o telefone, também é possível definir `OWNER_LID` com o identificador WhatsApp confirmado do dono no formato `123456789@lid`. Não use o LID de outro participante.
-3. Publique o commit no serviço do Render, aguarde o bot conectar e teste os comandos no grupo.
-4. Para remover participantes ou abrir e fechar o grupo, a conta conectada ao bot precisa ser administradora. Para reiniciar, use `!reiniciar confirmar` na conta do dono.
+## Atualizar no GitHub
 
-## Teste rápido
+Envie os arquivos extraídos deste pacote para a raiz da branch `main` do repositório Zumybot3.1.0. O `package.json` inclui a biblioteca de QR Code. Mantenha os arquivos MP3 e M4A que já estão no repositório.
 
-- `!configurar` abre o menu de configuração para administradores.
-- `!ranknoia`, `!rankdoido` e `!ship` devem responder com a brincadeira no grupo.
-- `!fig` aceita uma foto com o comando na legenda ou como resposta a uma imagem ou vídeo curto.
-- `!play opera` envia o MP3 que já está no repositório.
-- `!play verão` envia o link do Audius. Essa faixa ainda precisa de uma fonte autorizada de download para o bot enviar o MP3.
-- `!play LINK` envia MP3, M4A ou MP4 de até 12 MB se o link for um arquivo HTTPS direto do endereço configurado em `MUSIC_AUDIO_ORIGIN`. Use um endereço sob controle do administrador, com arquivos que podem ser compartilhados. Use a URL final do arquivo, sem redirecionamento.
-- `!ia Diga olá ao grupo` testa a integração. Se falhar, a resposta e os logs distinguem chave recusada, falta de cota, limite e erro de acesso ao modelo.
+Abra o serviço do bot no Render e publique o último commit. Em `/health`, a revisão deve aparecer como `painel-v9`.
 
-## Verificar o deploy
+## Persistir o cadastro e o WhatsApp
 
-Abra [o status do Zumybot](https://zumybot3-1-0.onrender.com/health). A resposta desta versão mostra `"revisao":"comandos-v2"`. Aguarde `"status":"conectado"` antes de testar.
+Mantenha `ADMIN_TOKEN` configurado como segredo no Render. Use seu valor somente na página `/parear`.
 
-O servidor processa comandos recentes do próprio aparelho vinculado quando o Baileys os entrega como `append`, além dos eventos `notify`. Ele ignora histórico, eventos duplicados e mensagens enviadas por outras contas em `append`.
+Confirme em **Disks** que o serviço tem um disco persistente e que `SESSION_DIR` aponta para uma pasta dentro do ponto de montagem. Exemplo: disco montado em `/var/data` e variável `SESSION_DIR=/var/data/zumy-session`. Se já usa uma pasta persistente, mantenha o endereço atual para reaproveitar a sessão. Se a pasta anterior era temporária, a primeira instalação no novo disco pode exigir pareamento. A pasta guarda as credenciais da conexão, o cadastro do dono e as configurações de cada grupo em arquivos separados.
 
-No grupo, envie `!reiniciar` sem `confirmar`. O bot deve mostrar a instrução de confirmação quando reconhecer o dono. Se ainda recusar, procure `Identidade do dono não confirmada` nos logs. O registro informa se o evento veio com telefone ou LID e se as variáveis foram configuradas. Ele não inclui o número nem o LID.
+## Usar o painel
+
+1. Em `/parear`, informe o `ADMIN_TOKEN`. Na seção **Dono do bot**, toque em **Carregar cadastro**, informe o nome e telefone da conta responsável e salve. Se o WhatsApp apresentar essa conta apenas por LID, mande `!meuid` com ela e salve o LID que o bot enviar em privado. O número do dono pode ser diferente do número usado para parear.
+2. Teste `!dono` para confirmar o nome e `!reiniciar` pela conta do dono para verificar a permissão. Pare na solicitação de confirmação para evitar reiniciar.
+3. Se o WhatsApp estiver desconectado, use **Mostrar QR Code** ou **Gerar código** com o número da conta do bot. Use **Preparar nova sessão** quando a sessão estiver encerrada e o painel indicar essa opção.
+4. Com o WhatsApp conectado, toque em **Sincronizar grupos**. Selecione o grupo e ajuste o apelido, o modo de boas-vindas e as legendas. As alterações são aplicadas no grupo selecionado assim que forem salvas.
+5. O menu de música inclui `!play lista`, `!play artista NOME` e `!play archive MÚSICA | ARTISTA`.
+
+Salvar o cadastro do dono não reinicia o processo nem altera o pareamento. Se o WhatsApp desvincular a sessão, será preciso vincular de novo.

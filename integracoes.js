@@ -204,7 +204,7 @@ async function downloadArchive(url, video) {
   throw new Error('O Archive retornou muitos redirecionamentos.');
 }
 
-function chooseArchiveFile(record, extension, query) {
+function chooseArchiveFile(record, extension, query, strictTitle) {
   const files = (Array.isArray(record.files) ? record.files : []).filter(file => {
     const size = Number(file?.size);
     return typeof file?.name === 'string' && !/[\\/]/.test(file.name) &&
@@ -213,7 +213,8 @@ function chooseArchiveFile(record, extension, query) {
   });
   if (!query) return files[0];
   const title = trackName(query);
-  return files.find(file => trackName(String(file.title || file.name)).includes(title)) || files[0];
+  const match = files.find(file => trackName(String(file.title || file.name)).includes(title));
+  if (match || !strictTitle || trackName(String(record.metadata?.title || '')).includes(title)) return match || files[0];
 }
 
 const localTracks = [
@@ -317,18 +318,28 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
   async function playArchive({ arg, reply, send }, requestedId) {
     const [, extension, term] = /^(?:(mp3|mp4)\s+)?([\s\S]+)$/i.exec(arg.trim()) || [];
     const format = extension?.toLowerCase() || 'mp3';
-    const query = (term || '').replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
     const id = requestedId || (term && archiveLink(term));
-    if (!id && (!query || query.length > 120)) {
-      return reply('Use !play archive NOME, !play archive mp4 NOME ou !play com o link de um item archive.org/details/.');
+    const apenasArtista = /^artista(?:\s|$)/i.test(term || '');
+    const entrada = (term || '').replace(/^artista(?:\s+|$)/i, '');
+    const limpar = value => value.replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const [primeira, segunda] = entrada.split('|', 2).map(limpar);
+    const titulo = apenasArtista ? '' : primeira;
+    const artista = apenasArtista ? primeira : segunda || '';
+    if (!id && ((!titulo && !artista) || titulo.length + artista.length > 120)) {
+      return reply('Use !play artista NOME ou !play archive MÚSICA | ARTISTA. Para vídeo, use !play archive mp4 NOME.');
     }
+    const buscaExterna = 'https://www.youtube.com/results?search_query=' +
+      encodeURIComponent([titulo, artista].filter(Boolean).join(' '));
     const getItem = identifier => requestJson(archiveOrigin + '/metadata/' + encodeURIComponent(identifier));
     try {
       let ids = id ? [id] : [];
       if (!id) {
         const search = new URL('/advancedsearch.php', archiveOrigin);
+        const filtro = artista
+          ? (titulo ? ' AND title:"' + titulo + '"' : '') + ' AND creator:"' + artista + '"'
+          : ' AND (title:"' + titulo + '" OR creator:"' + titulo + '")';
         search.searchParams.set('q', 'mediatype:' + (format === 'mp4' ? 'movies' : 'audio') +
-          ' AND title:"' + query + '" AND licenseurl:*');
+          filtro + ' AND licenseurl:*');
         search.searchParams.set('fl[]', 'identifier');
         search.searchParams.set('output', 'json');
         search.searchParams.set('rows', '4');
@@ -342,14 +353,15 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
         if (!record || record.is_dark || record.metadata?.['access-restricted-item']) continue;
         const license = licensedArchiveItem(record);
         if (!license) continue;
-        const file = chooseArchiveFile(record, format, id ? '' : query);
+        const creator = [record.metadata.creator].flat().filter(Boolean).join(', ').slice(0, 180);
+        if (!id && artista && !trackName(creator).includes(trackName(artista))) continue;
+        const file = chooseArchiveFile(record, format, id ? '' : titulo, Boolean(!id && artista && titulo));
         if (!file) continue;
         const page = archiveOrigin + '/details/' + encodeURIComponent(ids[i]);
         const raw = archiveOrigin + '/download/' + encodeURIComponent(ids[i]) + '/' + encodeURIComponent(file.name);
         let media;
         try { media = await downloadArchive(raw, format === 'mp4'); }
         catch (error) { lastError = error; continue; }
-        const creator = [record.metadata.creator].flat().filter(Boolean).join(', ').slice(0, 180);
         const title = String(file.title || record.metadata.title || file.name).slice(0, 180);
         const credit = title + (creator ? ' — ' + creator : '') + '\nFonte: ' + page + '\nLicença: ' + license;
         if (media.video) return await send({ ...media, caption: credit });
@@ -362,7 +374,7 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
       }
       return reply('Não encontrei um ' + format.toUpperCase() +
         ' de até 12 MB com licença de compartilhamento confirmada no Internet Archive.' +
-        (id ? '\n' + archiveOrigin + '/details/' + encodeURIComponent(id) : ''));
+        (id ? '\n' + archiveOrigin + '/details/' + encodeURIComponent(id) : '\nBuscar no YouTube: ' + buscaExterna));
     } catch (error) {
       logger.warn({ name: error.name, err: error.message }, 'Falha na busca do Internet Archive');
       return reply('O Internet Archive está indisponível para esta busca. Tente novamente em instantes.');
@@ -372,7 +384,7 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
   async function playAudio({ arg, reply, send }) {
     if (!arg || trackName(arg) === 'lista') {
       return reply('🎵 Áudios cadastrados\n' + localTracks.map(([, [name]]) => '!play ' + name).join('\n') +
-        '\n\nCatálogo externo: !play archive NOME');
+        '\n\nCatálogo externo: !play artista NOME ou !play archive MÚSICA | ARTISTA');
     }
     const name = trackName(arg);
     const localFile = fileByName.get(name);
@@ -381,6 +393,7 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     if (['verao', 'verao bell marques'].includes(name) || arg === audiusLink) {
       return reply('🎵 VERÃO — Bell Marques\n' + audiusLink);
     }
+    if (/^artista(?:\s|$)/i.test(arg)) return playArchive({ arg, reply, send });
     if (/^archive(?:\s|$)/i.test(arg)) return playArchive({ arg: arg.slice(7), reply, send });
     const item = archiveLink(arg);
     if (item) return playArchive({ arg, reply, send }, item);

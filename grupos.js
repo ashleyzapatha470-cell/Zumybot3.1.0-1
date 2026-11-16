@@ -174,8 +174,8 @@ function groupActions() {
   };
 }
 
-function ownerActions(restart, ownerJid) {
-  const block = action => async ({ arg, targetPhone, sock, reply }) => {
+function ownerActions(restart) {
+  const block = action => async ({ arg, targetPhone, sock, reply, ownerJid }) => {
     const number = arg.replace(/^\+/, '');
     const target = /^\d{10,15}$/.test(number) ? userJid(number) : targetPhone;
     if (!target || target === ownerJid || target === normalizeJid(sock.user?.id)) {
@@ -238,15 +238,16 @@ function parseZoom(phrase = '') {
   return 'menu';
 }
 
-export function createGroupHandler({ folder, logger = console, downloadMedia, restart, env = process.env, generateVoice } = {}) {
-  const ownerDigits = String(env.OWNER_NUMBER || ownerNumber).replace(/\D/g, '');
-  if (!/^\d{10,15}$/.test(ownerDigits)) throw new Error('OWNER_NUMBER deve conter DDI, DDD e número.');
-  const ownerJid = userJid(ownerDigits);
-  const ownerLabel = String(env.OWNER_NAME || ownerName).replace(/[\r\n*]/g, ' ').trim().slice(0, 60) || ownerName;
-  const ownerLid = /^\d+@lid$/.test(env.OWNER_LID || '') ? env.OWNER_LID : undefined;
+export function createGroupHandler({ folder, logger = console, downloadMedia, restart, env = process.env, generateVoice, getOwner } = {}) {
+  const defaultOwner = {
+    number: String(env.OWNER_NUMBER || ownerNumber).replace(/\D/g, ''),
+    name: env.OWNER_NAME || ownerName,
+    lid: env.OWNER_LID || '',
+  };
+  if (!/^\d{10,15}$/.test(defaultOwner.number)) throw new Error('OWNER_NUMBER deve conter DDI, DDD e número.');
   const config = readSettings(folder);
   const recent = new Map();
-  const activeBroadcasts = new Set();
+  let broadcasting = false;
   const lastCommand = new Map();
   const games = createGames();
   const integrations = createIntegrations({ downloadMedia, logger, env });
@@ -302,8 +303,8 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     ...basic,
     regras: ({ meta, reply }) => reply(meta.desc || 'Este grupo não tem regras na descrição.'),
     ...groupActions(), ...security, ...rank, ...relation, ...games, ...jokeActions, ...integrations,
-    ...ownerActions(restart, ownerJid),
-    configurar: ({ reply, settings }) => reply(menu('configuracao', { nickname: settings.nickname, ownerLabel })),
+    ...ownerActions(restart),
+    configurar: ({ reply, settings, ownerLabel }) => reply(menu('configuracao', { nickname: settings.nickname, ownerLabel })),
     vozzumy: ({ arg, settings, update, reply }) => {
       const estilo = arg.toLowerCase();
       const opcoes = Object.keys(estilosVoz).join(', ');
@@ -386,6 +387,10 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const content = contentOf(msg.message);
     const text = chatText(content).trim();
     const settings = config.get(jid);
+    const owner = getOwner?.() || defaultOwner;
+    const ownerJid = userJid(owner.number);
+    const ownerLabel = String(owner.name || ownerName).replace(/[\r\n*]/g, ' ').trim().slice(0, 60) || ownerName;
+    const ownerLid = /^\d+@lid$/.test(owner.lid || '') ? owner.lid : undefined;
     const zoom = /^zoom(?:[\s,:]+([\s\S]+))?$/i.exec(text);
     const request = zoom ? parseZoom(zoom[1]) : text.startsWith(prefix)
       ? text.slice(prefix.length) : '';
@@ -529,7 +534,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     logger.info({ command, jid }, 'Comando de grupo');
     if (ownerCommands.has(command) && !isOwner) {
       logger.info({
-        command, fromMe: Boolean(msg.key.fromMe), ownerNumberConfigured: Boolean(env.OWNER_NUMBER),
+        command, fromMe: Boolean(msg.key.fromMe), ownerNumberConfigured: Boolean(getOwner?.() || env.OWNER_NUMBER),
         senderHasPhone: senderIds.some(id => id.endsWith('@s.whatsapp.net')),
         senderHasLid: senderIds.some(id => id.endsWith('@lid')),
         ownerLidConfigured: Boolean(ownerLid),
@@ -557,7 +562,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const mediaMessage = isMedia(content) || !isMedia(quotedContent) ? msg : quoted;
     const source = contentOf(mediaMessage.message);
     const context = {
-      sock, jid, arg, reply, send, meta, actor, senderIds, isAdmin, botAdmin, commandKey: msg.key, target: targetMember?.id || target, targetMember, targetPhone, settings, quotedKey, source, voz,
+      sock, jid, arg, reply, send, meta, actor, senderIds, ownerJid, ownerLabel, isAdmin, botAdmin, commandKey: msg.key, target: targetMember?.id || target, targetMember, targetPhone, settings, quotedKey, source, voz,
       members,
       admins: participants.filter(member => member.admin === 'admin' || member.admin === 'superadmin' ||
         member.isAdmin === true || member.isSuperAdmin === true).map(member => member.id).filter(Boolean),
@@ -586,14 +591,16 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
         throw error;
       }
     }
-    if (activeBroadcasts.has(ownerJid)) return reply('Já há um aviso sendo enviado.');
-    activeBroadcasts.add(ownerJid);
+    if (broadcasting) return reply('Já há um aviso sendo enviado.');
+    broadcasting = true;
     try {
       return await handlers.broadcast(context);
     } finally {
-      activeBroadcasts.delete(ownerJid);
+      broadcasting = false;
     }
   };
   handleGroup.onParticipantsUpdate = groupSettings.greet;
+  handleGroup.groupSettings = jid => config.get(jid);
+  handleGroup.saveGroupSettings = (jid, values) => config.save(jid, { ...config.get(jid), ...values });
   return handleGroup;
 }
