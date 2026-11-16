@@ -443,7 +443,15 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     if (command === 'membros') return reply('O grupo tem ' + participants.length + ' participantes.');
     if (command === 'apelido' && !arg) return reply('Apelido neste grupo: ' + (settings.nickname || botName));
     logger.info({ command, jid }, 'Comando de grupo');
-    if (ownerCommands.has(command) && !isOwner) return reply('Comando exclusivo do dono do ZUMY.');
+    if (ownerCommands.has(command) && !isOwner) {
+      logger.info({
+        command, fromMe: Boolean(msg.key.fromMe), ownerNumberConfigured: Boolean(env.OWNER_NUMBER),
+        senderHasPhone: senderIds.some(id => id.endsWith('@s.whatsapp.net')),
+        senderHasLid: senderIds.some(id => id.endsWith('@lid')),
+        ownerLidConfigured: Boolean(ownerLid),
+      }, 'Identidade do dono não confirmada');
+      return reply('Comando exclusivo do dono do ZUMY.');
+    }
     if (adminCommands.has(command) && !isAdmin) return reply('Comando exclusivo dos administradores.');
     if (botAdmin === false && ['b', 'ban', 'kick', 'abrirgp', 'fechargp', 'grupo'].includes(command)) {
       return reply('Torne o número conectado ao ZUMY administrador deste grupo para executar esse comando.');

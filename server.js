@@ -16,6 +16,7 @@ const logger=pino({level:process.env.LOG_LEVEL||'info'});
 const handleGroup = createGroupHandler({
   folder,
   logger,
+  env: process.env,
   downloadMedia: msg => downloadMediaMessage(msg, 'buffer', {}),
   restart: () => process.exit(1),
 });
@@ -99,7 +100,7 @@ app.get('/parear', (_req, res) => {
 </script>
 </html>`);
 });
-app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix}));
+app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'comandos-v2'}));
 app.get('/admin/status',protect,(_req,res)=>res.json({status,paused,qrDisponivel:!!qr}));
 app.post('/admin/pause',protect,(req,res)=>{
   if(typeof req.body?.paused!=='boolean')return res.status(400).json({error:'Informe paused como true ou false'});
@@ -131,13 +132,15 @@ async function startConnection() {
 async function connect(){
   status='conectando';const {state,saveCreds}=await useMultiFileAuthState(folder);
   const current=makeWASocket({auth:state,logger:logger.child({module:'baileys'}),printQRInTerminal:false,markOnlineOnConnect:false, syncFullHistory:false});sock=current;
+  const processed = new Map();
+  let connectedAt = 0;
   current.ev.on('creds.update', () => {
     saveCreds().catch(error => logger.error({ err: error }, 'Falha ao salvar sessão WhatsApp'));
   });
   current.ev.on('connection.update',({connection,lastDisconnect,qr:nextQr})=>{
     if(current!==sock)return;
     if(nextQr){status='aguardando_pareamento';qr=nextQr;logger.info('QR de pareamento disponível')}
-    if(connection==='open'){status='conectado';qr=null;attempt=0;logger.info('ZUMY WhatsApp conectado')}
+    if(connection==='open'){connectedAt=Date.now();status='conectado';qr=null;attempt=0;logger.info('ZUMY WhatsApp conectado')}
     if(connection==='close'){
       sock=null;qr=null;
       const code=lastDisconnect?.error?.output?.statusCode;
@@ -157,19 +160,46 @@ async function connect(){
     handleGroup.onParticipantsUpdate(current, event)
       .catch(error => logger.warn({ err: error }, 'Falha na mensagem de boas-vindas'));
   });
-  current.ev.on('messages.upsert',async({messages,type})=>{
-    logger.info({type,quantity:messages?.length},'Evento messages.upsert');
-    if(paused||type!=='notify'||current!==sock)return;
-    for(const msg of messages||[]){
-      if(!msg?.message||!msg.key?.remoteJid?.endsWith('@g.us'))continue;
-      logger.info({chat:msg.key.remoteJid,isGroup:msg.key.remoteJid?.endsWith('@g.us')},'Mensagem recebida');
+  function commandText(message) {
+    while (message?.ephemeralMessage?.message || message?.documentWithCaptionMessage?.message) {
+      message = message.ephemeralMessage?.message || message.documentWithCaptionMessage.message;
+    }
+    return (message?.conversation || message?.extendedTextMessage?.text || message?.imageMessage?.caption ||
+      message?.videoMessage?.caption || message?.documentMessage?.caption || '').trim();
+  }
+
+  current.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (paused || current !== sock || !['notify', 'append'].includes(type)) return;
+    const now = Date.now();
+    for (const [key, receivedAt] of processed) {
+      if (now - receivedAt <= 120_000) break;
+      processed.delete(key);
+    }
+    for (const msg of messages || []) {
+      if (paused || current !== sock) break;
+      const { remoteJid, id, fromMe } = msg?.key || {};
+      if (!msg?.message || !remoteJid?.endsWith('@g.us')) continue;
+      const text = commandText(msg.message);
+      const isCommand = text.startsWith(prefix) || /^zoom(?:$|[\s,:])/i.test(text);
+      if (type === 'append' || (fromMe && isCommand)) {
+        const sentAt = Number(msg.messageTimestamp) * 1000;
+        if (!fromMe || !isCommand || !connectedAt || !Number.isFinite(sentAt) ||
+            sentAt < Math.max(connectedAt - 999, now - 30_000) || sentAt > now + 10_000) continue;
+      }
+      const key = id && remoteJid + ':' + id;
+      if (key && processed.has(key)) continue;
+      if (key) {
+        if (processed.size >= 2048) processed.delete(processed.keys().next().value);
+        processed.set(key, now);
+      }
+      if (isCommand) logger.info({ type, fromMe: Boolean(fromMe) }, 'Comando recebido do WhatsApp');
       try {
-        await handleGroup(current,msg);
+        await handleGroup(current, msg);
       } catch (error) {
-        logger.error({err:error, chat:msg.key.remoteJid},'Erro ao processar mensagem de grupo');
-        if ((msg.message.conversation || msg.message.extendedTextMessage?.text || '').trimStart().startsWith(prefix)) {
-          await current.sendMessage(msg.key.remoteJid, {text:'Não consegui concluir o comando agora.'}, {quoted:msg})
-            .catch(err => logger.warn({err}, 'Falha ao informar erro do comando'));
+        logger.error({ err: error }, 'Erro ao processar mensagem de grupo');
+        if (isCommand) {
+          await current.sendMessage(remoteJid, { text: 'Não consegui concluir o comando agora.' }, { quoted: msg })
+            .catch(err => logger.warn({ err }, 'Falha ao informar erro do comando'));
         }
       }
     }
