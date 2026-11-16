@@ -1,5 +1,6 @@
 import express from 'express';
 import pino from 'pino';
+import QRCode from 'qrcode';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,6 +32,7 @@ function prepareNewAuthFolder() {
 const adminToken=process.env.ADMIN_TOKEN;
 let status='iniciando',sock=null,qr=null,attempt=0,paused=false;
 let reconnectTimer;
+let pairingInProgress = false;
 const logger=pino({level:process.env.LOG_LEVEL||'info'});
 const handleGroup = createGroupHandler({
   folder,
@@ -46,7 +48,7 @@ app.get('/parear', (_req, res) => {
   res.set({
     'Cache-Control': 'no-store',
     'Content-Security-Policy': "default-src 'none'; script-src 'nonce-" + nonce +
-      "'; style-src 'nonce-" + nonce + "'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "'; style-src 'nonce-" + nonce + "'; connect-src 'self'; img-src data:; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
     'Referrer-Policy': 'no-referrer',
   });
   res.type('html').send(`<!doctype html>
@@ -64,6 +66,8 @@ app.get('/parear', (_req, res) => {
   button { background: #8af0bb; color: #10241d; border: 0; font-weight: 650; }
   button:disabled { opacity: .65; }
   a { color: #a0deff; }
+  #qr { display: block; width: min(100%, 300px); margin: 16px auto; }
+  #qr[hidden] { display: none; }
   #code { font: bold 1.5rem ui-monospace, monospace; letter-spacing: .15em; overflow-wrap: anywhere; }
 </style>
 <main>
@@ -74,9 +78,12 @@ app.get('/parear', (_req, res) => {
     <label for="token">Token de administração do Render (ADMIN_TOKEN)</label>
     <input id="token" type="password" required autocomplete="off">
     <button type="submit">Gerar código</button>
+    <button type="button" id="show-qr">Mostrar QR Code</button>
+    <button type="button" id="reset">Preparar nova sessão</button>
   </form>
   <p id="result" role="status"></p>
   <p id="code"></p>
+  <img id="qr" alt="QR Code de pareamento" hidden>
   <p>No WhatsApp do bot, abra <strong>Aparelhos conectados → Conectar um aparelho → Conectar com número de telefone</strong>.</p>
   <a href="/health">Ver status do bot</a>
 </main>
@@ -86,40 +93,56 @@ app.get('/parear', (_req, res) => {
   const number = document.getElementById('number');
   const result = document.getElementById('result');
   const code = document.getElementById('code');
-  const submit = form.querySelector('button');
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (submit.disabled) return;
-    submit.disabled = true;
+  const qrImage = document.getElementById('qr');
+  const buttons = Array.from(form.querySelectorAll('button'));
+  async function pair(action) {
+    if (buttons[0].disabled) return;
+    if (!token.value.trim()) {
+      result.textContent = 'Informe o ADMIN_TOKEN do Render.';
+      token.focus();
+      return;
+    }
+    buttons.forEach(button => button.disabled = true);
+    qrImage.hidden = true;
+    qrImage.removeAttribute('src');
     code.textContent = '';
-    result.textContent = 'Solicitando código…';
+    result.textContent = 'Aguarde…';
     const authorization = 'Bearer ' + token.value.trim();
-    token.value = '';
     try {
-      const response = await fetch('/admin/pair', {
-        method: 'POST',
-        headers: { Authorization: authorization, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ number: number.value }),
-        cache: 'no-store',
-      });
-      const data = await response.json();
-      if (!response.ok || typeof data.code !== 'string') {
-        throw new Error(data.error || 'O servidor não retornou um código.');
+      const options = { headers: { Authorization: authorization }, cache: 'no-store' };
+      if (action !== 'qr-image') {
+        options.method = 'POST';
+        options.headers['Content-Type'] = 'application/json';
+        options.body = JSON.stringify({ number: number.value });
       }
-      code.textContent = data.code;
-      result.textContent = 'Digite este código no WhatsApp do bot.';
+      const response = await fetch('/admin/' + action, options);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Não foi possível concluir a solicitação.');
+      if (action === 'qr-image') {
+        qrImage.src = data.image;
+        qrImage.hidden = false;
+        result.textContent = 'Escaneie o QR Code em Aparelhos conectados. Se expirar, toque em Mostrar QR Code de novo.';
+      } else if (action === 'pair-reset') {
+        result.textContent = 'Nova sessão em preparação. Aguarde alguns segundos e tente Mostrar QR Code ou Gerar código.';
+      } else {
+        code.textContent = data.code;
+        result.textContent = 'Digite este código no WhatsApp do bot.';
+      }
     } catch (error) {
       result.textContent = error.message === 'Failed to fetch'
         ? 'Falha ao acessar o serviço. Tente novamente.'
         : error.message;
     } finally {
-      submit.disabled = false;
+      buttons.forEach(button => button.disabled = false);
     }
-  });
+  }
+  form.addEventListener('submit', event => { event.preventDefault(); void pair('pair'); });
+  document.getElementById('show-qr').addEventListener('click', () => void pair('qr-image'));
+  document.getElementById('reset').addEventListener('click', () => void pair('pair-reset'));
 </script>
 </html>`);
 });
-app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'comandos-v7'}));
+app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'comandos-v8'}));
 app.get('/admin/status',protect,(_req,res)=>res.json({status,paused,qrDisponivel:!!qr}));
 app.post('/admin/pause',protect,(req,res)=>{
   if(typeof req.body?.paused!=='boolean')return res.status(400).json({error:'Informe paused como true ou false'});
@@ -127,7 +150,77 @@ app.post('/admin/pause',protect,(req,res)=>{
   res.json({paused});
 });
 app.get('/admin/qr',protect,(_req,res)=>res.json({qr:qr||null}));
-app.post('/admin/pair',protect,async(req,res)=>{res.set('Cache-Control','no-store');const number=String(req.body?.number||'').replace(/\D/g,'');if(!/^55\d{10,11}$/.test(number))return res.status(400).json({error:'Informe 55 + DDD + número'});if(status==='conectado')return res.status(409).json({error:'O ZUMY já está conectado ao WhatsApp.'});if(!sock||!qr)return res.status(409).json({error:'O ZUMY ainda não está pronto para parear. Confira o status do bot e tente novamente.'});try{const code=await sock.requestPairingCode(number);res.json({code})}catch(e){logger.error({err:e},'Falha pareamento');res.status(500).json({error:'Não foi possível gerar código; confira os logs'})}});
+function pairingProblem() {
+  if (status === 'conectado') return 'O ZUMY já está conectado ao WhatsApp.';
+  if (status === 'sessao_expirada' || status === 'conexao_substituida') {
+    return 'A sessão está encerrada. Toque em Preparar nova sessão.';
+  }
+  if (!sock || !qr || status !== 'aguardando_pareamento') {
+    return 'O WhatsApp ainda está preparando o pareamento. Aguarde alguns segundos.';
+  }
+}
+
+app.get('/admin/qr-image', protect, async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const problema = pairingProblem();
+  if (problema) return res.status(409).json({ error: problema });
+  try {
+    const image = await QRCode.toDataURL(qr, { width: 300, margin: 3 });
+    return res.json({ image });
+  } catch {
+    return res.status(500).json({ error: 'Não foi possível desenhar o QR Code. Tente Gerar código.' });
+  }
+});
+
+app.post('/admin/pair', protect, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const number = String(req.body?.number || '').replace(/\D/g, '');
+  if (!/^55\d{10,11}$/.test(number)) return res.status(400).json({ error: 'Informe 55 + DDD + número do bot.' });
+  const problema = pairingProblem();
+  if (problema) return res.status(409).json({ error: problema });
+  if (pairingInProgress) return res.status(409).json({ error: 'Já existe um pedido de código em andamento.' });
+  pairingInProgress = true;
+  const current = sock;
+  try {
+    const code = await current.requestPairingCode(number);
+    if (sock !== current && status !== 'conectado') {
+      return res.status(409).json({ error: 'A conexão mudou durante o pedido. Aguarde e tente novamente.' });
+    }
+    return res.json({ code });
+  } catch (error) {
+    const code = error.output?.statusCode || error.code;
+    logger.warn({ code, name: error.name }, 'Falha ao gerar código de pareamento');
+    const hint = code ? ' Código do erro: ' + code + '.' : '';
+    return res.status(502).json({ error: 'O WhatsApp não gerou o código. Tente Mostrar QR Code.' + hint });
+  } finally {
+    pairingInProgress = false;
+  }
+});
+
+app.post('/admin/pair-reset', protect, (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (status === 'conectado') return res.status(409).json({ error: 'O WhatsApp já está conectado. A sessão ativa foi preservada.' });
+  if (pairingInProgress || !['sessao_expirada', 'conexao_substituida', 'aguardando_pareamento'].includes(status)) {
+    return res.status(409).json({ error: 'Aguarde a tentativa atual terminar antes de preparar uma nova sessão.' });
+  }
+  try {
+    prepareNewAuthFolder();
+    const current = sock;
+    sock = null;
+    qr = null;
+    status = 'preparando_pareamento';
+    attempt = 0;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+    scheduleReconnect();
+    try { current?.end(new Error('Nova sessão solicitada')); }
+    catch (error) { logger.warn({ name: error.name }, 'Falha ao fechar socket anterior'); }
+    return res.status(202).json({ status });
+  } catch (error) {
+    logger.error({ name: error.name, code: error.code }, 'Falha ao preparar nova sessão');
+    return res.status(500).json({ error: 'Não foi possível preparar a sessão. Confira SESSION_DIR e os logs do Render.' });
+  }
+});
 app.listen(port,'0.0.0.0',()=>logger.info({port},'ZUMY HTTP iniciado'));
 function scheduleReconnect() {
   if (reconnectTimer) return;
