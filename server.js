@@ -288,7 +288,7 @@ app.get('/parear', (_req, res) => {
 </script>
 </html>`);
 });
-app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'painel-v9'}));
+app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'painel-v10'}));
 app.get('/admin/owner', protect, (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json(ownerSaved || defaultOwner);
@@ -566,4 +566,13 @@ async function connect(){
     }
   });
 }
+let communityRunning = false;
+const communityTimer = setInterval(async () => {
+  if (communityRunning || paused || status !== 'conectado' || !sock) return;
+  communityRunning = true;
+  try { await handleGroup.tick(sock); }
+  catch (error) { logger.warn({ name: error.name }, 'Falha ao rodar os automáticos'); }
+  finally { communityRunning = false; }
+}, 60_000);
+communityTimer.unref();
 void startConnection();

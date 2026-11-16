@@ -5,7 +5,7 @@ import { botName, categoryCommands, menu, normalizeCommand, ownerName, ownerNumb
 import { createGames } from './jogos.js';
 import { createIntegrations } from './integracoes.js';
 import { chamouZumy, criarVoz, estilosVoz } from './voz.js';
-import { createGroupSettings, extraAdmin } from './config-grupo.js';
+import { createGroupSettings, extraAdmin, createCommunity, communityAdmin } from './config-grupo.js';
 
 const pick = values => values[randomInt(values.length)];
 const shuffle = values => {
@@ -43,7 +43,7 @@ function contentOf(message) {
 }
 
 function readSettings(folder) {
-  if (!folder) return { get: () => ({}), save: () => {} };
+  if (!folder) return { get: () => ({}), save: () => {}, ids: () => [] };
   const path = join(folder, 'zumy-grupos.json');
   let data = {};
   try {
@@ -53,6 +53,7 @@ function readSettings(folder) {
   }
   return {
     get: jid => data[jid] || {},
+    ids: () => Object.keys(data),
     save(jid, settings) {
       const next = { ...data, [jid]: settings };
       writeFileSync(path + '.tmp', JSON.stringify(next), { mode: 0o600 });
@@ -74,7 +75,7 @@ const flags = {
 const ownerCommands = new Set(['reiniciar', 'bloquear', 'desbloquear', 'broadcast', 'grupos']);
 const adminCommands = new Set([
   'b', 'ban', 'kick', 'd', 'promover', 'rebaixar', 'grupo', 'abrirgp', 'fechargp',
-  'marcar', 'linkgp', 'add', 'configurar', 'vozzumy', ...Object.keys(flags), ...extraAdmin,
+  'marcar', 'linkgp', 'add', 'configurar', 'vozzumy', ...Object.keys(flags), ...extraAdmin, ...communityAdmin,
 ]);
 const basic = {
   menu: ({ arg, reply }) => reply(menu(arg)),
@@ -126,10 +127,11 @@ function describeParticipantResult(result, reply) {
 const comandoFalado = command => 'exclamação ' + (command || 'menu');
 
 function groupActions() {
-  const participantAction = action => async ({ sock, jid, target, targetMember, settings, reply }) => {
+  const participantAction = action => async ({ sock, jid, target, targetMember, settings, update, reply }) => {
     if (!target) return reply('Marque alguém ou responda à mensagem da pessoa.');
     const result = await sock.groupParticipantsUpdate(jid, [target], action);
     if (action !== 'remove' || Number(result?.[0]?.status) !== 200) return describeParticipantResult(result, reply);
+    update({ banHistory: [...(settings.banHistory || []).slice(-49), { id: target, at: Date.now() }] });
     const legenda = (settings.bemvindo2 ? settings.goodbyeText2 || settings.goodbyeText
       : settings.goodbyeText || settings.goodbyeText2) || '{usuario} foi removido do grupo.';
     const nome = targetMember?.name || targetMember?.notify || 'O participante';
@@ -163,7 +165,7 @@ function groupActions() {
     grupo: setGroup(),
     abrirgp: setGroup('a'),
     fechargp: setGroup('f'),
-    marcar: ({ arg, members, mention }) => mention((arg || 'Atenção, pessoal!') + '\n', members),
+    marcar: ({ arg, members, themeMark }) => themeMark('marcar', members, arg || 'Atenção, pessoal!'),
     linkgp: async ({ sock, jid, reply }) => reply('https://chat.whatsapp.com/' + await sock.groupInviteCode(jid)),
     add: async ({ sock, jid, arg, target, reply }) => {
       const number = arg.replace(/^\+/, '');
@@ -259,6 +261,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
   const declared = new Set(sections.flatMap(section => section.commands
     .filter(command => !command.startsWith('zoom ')).map(command => command.split(' ')[0])));
   const groupSettings = createGroupSettings({ config, integrations, known: declared, logger });
+  const community = createCommunity({ config, integrations, env, logger, downloadMedia, responderVoz });
   let nextSweep = 0;
 
   const security = Object.fromEntries(Object.entries(flags).map(([name, description]) => [
@@ -272,10 +275,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     },
   ]));
 
-  const rank = Object.fromEntries(rankings.map(name => [name, ({ members, mention, reply }) => {
-    if (!members.length) return reply('Nenhum participante disponível.');
-    return mention('🎲 ' + name + ' · sorteio de brincadeira\n', shuffle(members).slice(0, 5), true);
-  }]));
+  const rank = Object.fromEntries(rankings.map(name => [name, context => community.rank(context, name)]));
   const relation = Object.fromEntries(Object.entries(relationships).map(([name, label]) => [
     name,
     ({ target, actor, members, mention, reply }) => {
@@ -326,6 +326,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
       }
     },
     ...groupSettings.commands,
+    ...community.commands,
     p: integrations.play,
   };
   for (const name of declared) {
@@ -392,12 +393,24 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const ownerLabel = String(owner.name || ownerName).replace(/[\r\n*]/g, ' ').trim().slice(0, 60) || ownerName;
     const ownerLid = /^\d+@lid$/.test(owner.lid || '') ? owner.lid : undefined;
     const zoom = /^zoom(?:[\s,:]+([\s\S]+))?$/i.exec(text);
-    const request = zoom ? parseZoom(zoom[1]) : text.startsWith(prefix)
-      ? text.slice(prefix.length) : '';
+    let request = zoom ? parseZoom(zoom[1]) : text.startsWith(prefix) ? text.slice(prefix.length).trim() : '';
+    request = request
+      .replace(/^previs[aã]o do tempo(?=\s|$)/i, 'previsaodotempo')
+      .replace(/^data e hora(?=\s|$)/i, 'dataehora')
+      .replace(/^rank mentiroso(?=\s|$)/i, 'rankmentiroso')
+      .replace(/^(atividades|inativos)[✅❌]/i, '$1')
+      .replace(/^(ban|banfake|tirardalista|tirardalistar|listanegra|listanegram|liberarcastigo|tliberarcastogo)(?=@)/i, '$1 ')
+      .replace(/^(autorepro|aurorepro|autorepo|antiporno)([01])(?=\s|$)/i, '$1 $2');
     const match = /^([^\s]+)(?:\s+([\s\S]*))?$/u.exec(request);
     const usaPrefixo = text.startsWith(prefix);
     const chamadaVoz = !usaPrefixo && !zoom && chamouZumy(text);
-    const command = match ? normalizeCommand(match[1]) : '';
+    const rawCommand = match ? normalizeCommand(match[1]) : '';
+    const aliases = {
+      tliberarcastogo: 'liberarcastigo', liberarcastogo: 'liberarcastigo', listanegram: 'listanegra',
+      listanranca: 'listabranca', tirardalistar: 'tirardalista', aurorepro: 'autorepro',
+      autorepo: 'autorepro', autodowload: 'autodownload', rankdodia: 'rankdia',
+    };
+    const command = Object.hasOwn(aliases, rawCommand) ? aliases[rawCommand] : rawCommand;
     const arg = match?.[2]?.trim() || '';
     if (msg.key.fromMe && (outgoing.has(jid + ':' + msg.key.id) || pendingReplies.has(jid + ':' + text))) return;
     let narrou = false;
@@ -447,14 +460,14 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const menuInfo = { nickname: settings.nickname, user: msg.pushName, ownerLabel };
     if (msg.key.fromMe && !usaPrefixo && !zoom && !chamadaVoz) return;
     const hasAccessRules = settings.soadm || settings.blockedCommands?.length || settings.cooldown;
-    if (!hasAccessRules) {
+    if (!hasAccessRules && !settings.communitySync && !settings.antiporno && !Object.keys(settings.castigos || {}).length) {
       if (command === 'menu') return reply(menu(arg, menuInfo));
       if (categoryCommands.includes(command)) return reply(menu(command, menuInfo));
       if (Object.hasOwn(basic, command)) return basic[command]({ arg, reply, ownerLabel });
     }
     const activeSecurity = Object.keys(settings).some(name => name !== 'zoeira' && settings[name] &&
       (Object.hasOwn(flags, name) || name.startsWith('anti') || name === 'maxChars'));
-    const automatic = settings.autosticker || (settings.atodos && /^@all(?:\s|$)/i.test(text));
+    const automatic = settings.communitySync || settings.autosticker || settings.autodownload || Object.keys(settings.castigos || {}).length || (settings.atodos && /^@all(?:\s|$)/i.test(text));
     const knownCommand = declared.has(command) || categoryCommands.includes(command) || command === 'membros' || Object.hasOwn(basic, command);
     if (!activeSecurity && !automatic && !knownCommand && !usaPrefixo && !chamadaVoz) return;
     const ctx = (content.extendedTextMessage || content.imageMessage || content.videoMessage || content.documentMessage)?.contextInfo;
@@ -494,17 +507,32 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const bot = msg.key.fromMe ? sender : findMember(botIds) || findMember(await aliasesFor(botIds));
     const botAdmin = bot ? ['admin', 'superadmin'].includes(bot.admin) ||
       bot.isAdmin === true || bot.isSuperAdmin === true : undefined;
+    if ((settings.antiporno || settings.castigos?.[actor]) &&
+        await community.restricted({ sock, msg, jid, actor, content, text, isAdmin, botAdmin, settings })) return;
     if (activeSecurity && await moderate({ sock, msg, jid, actor, text, content, settings, isAdmin, botAdmin, mentions, reply })) return;
+    const timestamp = Number(msg.messageTimestamp);
+    if (settings.communitySync && !msg.key.fromMe && actor && (!timestamp || Date.now() - timestamp * 1000 < 120000) &&
+        (text || content.imageMessage || content.videoMessage || content.audioMessage || content.stickerMessage || content.documentMessage)) {
+      community.observe(jid, actor, msg.pushName);
+    }
     const members = participants.filter(member => member !== bot && member.id).map(member => member.id);
     if (!command && settings.atodos && isAdmin && /^@all(?:\s|$)/i.test(text)) {
-      return send({ text: text.slice(4).trim() || 'Atenção, pessoal!', mentions: members });
+      return community.themeMark(jid, 'all', members, text.slice(4).trim() || 'Atenção, pessoal!', send);
     }
-    if (chamadaVoz) return responderVoz.conversar(voz);
+    if (chamadaVoz && settings.autorepro !== false) return responderVoz.conversar(voz);
+    if (!command && !msg.key.fromMe && settings.autodownload && /^https:\/\/\S+$/i.test(text)) {
+      const url = URL.canParse(text) ? new URL(text) : null;
+      if (url && ((url.origin === 'https://archive.org' && url.pathname.startsWith('/details/')) ||
+          (/\.(?:mp3|m4a|mp4)$/i.test(url.pathname) && env.MUSIC_AUDIO_ORIGIN &&
+            url.origin === env.MUSIC_AUDIO_ORIGIN.replace(/\/$/, '')))) {
+        return integrations.play({ arg: text, reply, send });
+      }
+    }
     if (usaPrefixo && !knownCommand) {
       const exemplos = {
         configurar: '!configurar', play: '!play lista', fig: '!fig (responda a uma foto)',
         ia: '!ia Diga olá ao grupo', totag: '!totag Atenção, pessoal!', ban: '!ban @participante',
-        msgtemp: '!msgtemp 24h', vozzumy: '!vozzumy anime', reiniciar: '!reiniciar',
+        msgtemp: '!msgtemp 24h', castigo: '!castigo 24h @participante', rankativos: '!rankativos', perfil: '!perfil 2', vozzumy: '!vozzumy anime', reiniciar: '!reiniciar',
       };
       const candidato = Object.keys(exemplos).find(nome => command.length >= 2 && nome.startsWith(command));
       const nome = match?.[1]?.slice(0, 40);
@@ -562,6 +590,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const mediaMessage = isMedia(content) || !isMedia(quotedContent) ? msg : quoted;
     const source = contentOf(mediaMessage.message);
     const context = {
+      themeMark: (key, ids, title, sender = send) => community.themeMark(jid, key, ids, title, sender),
       sock, jid, arg, reply, send, meta, actor, senderIds, ownerJid, ownerLabel, isAdmin, botAdmin, commandKey: msg.key, target: targetMember?.id || target, targetMember, targetPhone, settings, quotedKey, source, voz,
       members,
       admins: participants.filter(member => member.admin === 'admin' || member.admin === 'superadmin' ||
@@ -599,7 +628,8 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
       broadcasting = false;
     }
   };
-  handleGroup.onParticipantsUpdate = groupSettings.greet;
+  handleGroup.onParticipantsUpdate = (sock, event) => community.entrance(sock, event, groupSettings.greet);
+  handleGroup.tick = community.tick;
   handleGroup.groupSettings = jid => config.get(jid);
   handleGroup.saveGroupSettings = (jid, values) => config.save(jid, { ...config.get(jid), ...values });
   return handleGroup;

@@ -8,7 +8,7 @@ import { prefix } from './menu.js';
 const ffmpeg = promisify(execFile);
 const maxMediaBytes = 8 * 1024 * 1024;
 
-async function convert({ data, text, animated = false, toImage = false }) {
+async function convert({ data, text, animated = false, toImage = false, color = '151827' }) {
   const folder = await mkdtemp(join(tmpdir(), 'zumy-'));
   try {
     const output = join(folder, toImage ? 'out.png' : 'out.webp');
@@ -16,7 +16,7 @@ async function convert({ data, text, animated = false, toImage = false }) {
     const args = ['-nostdin', '-hide_banner', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1'];
     if (text) {
       await writeFile(input, text);
-      args.push('-f', 'lavfi', '-i', 'color=c=0x151827:s=512x512:r=10');
+      args.push('-f', 'lavfi', '-i', 'color=c=0x' + color + ':s=512x512:r=10');
       const draw = 'drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:' +
         'textfile=input:expansion=none:fontsize=41:line_spacing=8:x=(w-tw)/2:y=(h-th)/2:fontcolor=';
       const colors = ['f6d365', '84fab0', '99ccff', 'ff92ae'];
@@ -484,7 +484,23 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
     }
   }
 
+  async function rankCard(command, title, score) {
+    const palette = ['243B53','493467','17665D','69354F','2B4168','705328'];
+    const hash = [...command].reduce((acc, char) => (acc * 31 + char.codePointAt(0)) >>> 0, 0);
+    const name = title.replace(/[^\p{L}\p{N} ]/gu, '').trim();
+    const words = name.split(/\s+/);
+    const rows = [];
+    let line = '';
+    for (const word of words) {
+      if (line && line.length + word.length > 18) { rows.push(line); line = ''; }
+      line += (line ? ' ' : '') + word.slice(0, 20);
+    }
+    if (line) rows.push(line);
+    return convert({ text: 'ZUMY · RANKING\n\n' + rows.join('\n') + '\n\nTOP 1 · ' + score + '%', toImage: true, color: palette[hash % palette.length] });
+  }
+
   return Object.fromEntries([
+    ['rankCard', rankCard],
     ...['fig', 'sticker', 'toimg', 'ttp', 'attp'].map(command => [command, context => media(context, command)]),
     ['play', playAudio],
     ['p', playAudio],
