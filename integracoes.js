@@ -169,18 +169,18 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
   }
 
   async function playByName({ arg, reply, send }) {
-    if (!env.JAMENDO_CLIENT_ID) {
+    const clientId = env.JAMENDO_CLIENT_ID;
+    if (!clientId) {
       return reply('O dono precisa configurar JAMENDO_CLIENT_ID no Render para tocar por nome. Você também pode usar !play com um link direto.');
     }
     if (arg.length > 150) return reply('Busque um título de até 150 caracteres.');
     const [title, artist] = arg.split('|', 2).map(piece => piece.trim());
     if (!title) return reply('Use !play NOME DA MÚSICA ou !p NOME | ARTISTA.');
     const query = new URLSearchParams({
-      client_id: env.JAMENDO_CLIENT_ID,
+      client_id: clientId,
       format: 'json',
       namesearch: title,
       limit: '10',
-      audiodlformat: 'mp32',
       type: 'single albumtrack',
     });
     if (artist) query.set('artist_name', artist);
@@ -188,11 +188,18 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
       const data = await requestJson('https://api.jamendo.com/v3.0/tracks/?' + query);
       if (data.headers?.status !== 'success') return reply('O catálogo não aceitou a busca. Confira a configuração do Jamendo.');
       const tracks = (data.results || []).filter(track =>
-        track.audiodownload_allowed === true && jamendoMediaUrl(track.audiodownload));
+        track.audiodownload_allowed === true && /^\d+$/.test(String(track.id)));
       const normalize = value => String(value || '').trim().toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
       const track = tracks.find(item => normalize(item.name) === normalize(title)) || tracks[0];
       if (!track) return reply('Nenhuma faixa com download autorizado nesse catálogo. Tente o nome exato ou NOME | ARTISTA.');
-      const audio = await downloadJamendo(track.audiodownload);
+
+      const downloadQuery = new URLSearchParams({
+        client_id: clientId,
+        id: String(track.id),
+        action: 'download',
+        audioformat: 'mp32',
+      });
+      const audio = await downloadJamendo('https://api.jamendo.com/v3.0/tracks/file/?' + downloadQuery);
       const source = jamendoMediaUrl(track.shareurl) ? '\n' + track.shareurl : '';
       const license = /^https:\/\/creativecommons\.org\//.test(track.license_ccurl || '') ? '\nLicença: ' + track.license_ccurl : '';
       await reply('🎵 ' + track.name + ' — ' + track.artist_name + source + license);
@@ -282,7 +289,8 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
   return Object.fromEntries([
     ...['fig', 'sticker', 'toimg', 'ttp', 'attp'].map(command => [command, context => media(context, command)]),
     ['play', playAudio],
+    ['p', playAudio],
     ...['buscar', 'musica', 'letra'].map(command => [command, context => music(context, command)]),
     ...['ia', 'perguntar', 'resumir', 'traduzir'].map(command => [command, context => ai(context, command)]),
   ]);
-  }
+      }
