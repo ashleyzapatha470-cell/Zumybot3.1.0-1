@@ -1,3 +1,10 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+
+const exec = promisify(execFile);
 const nomeZumy = /(?<![\p{L}\p{N}_])zumy(?![\p{L}\p{N}_])/giu;
 const normalize = value => value.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
 
@@ -36,10 +43,7 @@ function prepararResposta(texto, saudacao) {
   if (/\b(ajuda|me ajuda|comandos|como funciona)\b/.test(limpa) && limpa.split(' ').length <= 5) {
     return { resposta: 'Claro! Você pode me fazer uma pergunta ou digitar exclamação menu para ver o que posso fazer.' };
   }
-  if (fala.includes('?') || /^(como|qual|quais|quanto|quando|onde|porque|por que|o que|quem|me explique|me diga)\b/.test(limpa)) {
-    return { pergunta: fala.slice(0, 350) };
-  }
-  return { resposta: 'Tô por aqui! Se quiser conversar, me chama pelo nome e escreve a sua pergunta.' };
+  return { pergunta: fala.replace(/^[,!.?;: ]+/, '').slice(0, 500) };
 }
 
 async function gerarAudio(texto, estilo, chave, consultar) {
@@ -47,7 +51,7 @@ async function gerarAudio(texto, estilo, chave, consultar) {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + chave, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'gpt-4o-mini-tts', voice: estilo.voice, input: texto, response_format: 'opus',
+      model: 'gpt-4o-mini-tts', voice: estilo.voice, input: texto, response_format: 'wav',
       instructions: 'Fale em português brasileiro. Pronuncie Zumy como Zumi. ' + estilo.style,
     }),
     signal: AbortSignal.timeout(15000),
@@ -56,53 +60,97 @@ async function gerarAudio(texto, estilo, chave, consultar) {
     const erro = await response.json().catch(() => ({}));
     throw Object.assign(new Error('Falha no serviço de voz'), { status: response.status, code: erro.error?.code });
   }
-  const audio = Buffer.from(await response.arrayBuffer());
-  if (audio.subarray(0, 4).toString() !== 'OggS' || !audio.subarray(0, 128).includes(Buffer.from('OpusHead'))) {
-    throw new Error('O serviço de voz não retornou Ogg Opus.');
+  const wav = Buffer.from(await response.arrayBuffer());
+  if (wav.subarray(0, 4).toString() !== 'RIFF') throw new Error('A API não retornou WAV.');
+  const folder = await mkdtemp(join(tmpdir(), 'zumy-voz-'));
+  try {
+    const input = join(folder, 'fala.wav');
+    const output = join(folder, 'fala.ogg');
+    await writeFile(input, wav);
+    await exec('ffmpeg', ['-nostdin', '-v', 'error', '-i', input, '-c:a', 'libopus',
+      '-ac', '1', '-ar', '48000', '-application', 'voip', output], { timeout: 10000 });
+    return await readFile(output);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
   }
-  return audio;
 }
 
-export function criarVoz({
-  env = process.env, logger = console, consultar = fetch,
-  gerar = gerarAudio, perguntar,
-} = {}) {
+export function criarVoz({ env = process.env, logger = console, consultar = fetch, gerar = gerarAudio, perguntar } = {}) {
   const timeZone = env.BOT_TIMEZONE || 'America/Fortaleza';
   const chave = env.OPENAI_API_KEY?.trim();
-  const emAndamento = new Set();
   const audios = new Map();
+  const files = new Map();
+  const disclosures = new Set();
 
-  return async ({ jid, text, settings, update, send, reply }) => {
-    if (emAndamento.has(jid)) return;
-    emAndamento.add(jid);
-    try {
-      const saudacao = periodoDoDia(new Date(), timeZone);
-      const pedido = prepararResposta(text, saudacao);
-      const texto = pedido.resposta || (chave && perguntar ? await perguntar(pedido.pergunta) : '') ||
-        'Vi sua pergunta. A inteligência artificial precisa estar disponível para eu responder sobre esse assunto.';
-      const resposta = String(texto).trim().slice(0, 650);
-      if (!chave && gerar === gerarAudio) return await reply(resposta);
-
-      const nome = Object.hasOwn(estilosVoz, settings.voiceStyle) ? settings.voiceStyle : 'anime';
-      const chaveCache = nome + ':' + resposta;
-      try {
-        if (!audios.has(chaveCache)) {
-          if (audios.size >= 48) audios.delete(audios.keys().next().value);
-          audios.set(chaveCache, gerar(resposta, estilosVoz[nome], chave, consultar));
-        }
-        const audio = await audios.get(chaveCache);
-        if (!settings.voiceDisclosed) {
-          await send({ text: '🎙️ A voz da Zumy é gerada por inteligência artificial.' }, { citar: false });
-          update({ voiceDisclosed: true });
-        }
-        return await send({ audio, mimetype: 'audio/ogg; codecs=opus', ptt: true });
-      } catch (error) {
-        audios.delete(chaveCache);
-        logger.warn({ status: error.status, code: error.code, name: error.name }, 'Falha na voz do ZUMY');
-        return await reply(resposta);
-      }
-    } finally {
-      emAndamento.delete(jid);
+  async function falar({ settings, update, send, jid }, texto) {
+    if (!chave && gerar === gerarAudio) throw new Error('Configure OPENAI_API_KEY no Render.');
+    const nome = Object.hasOwn(estilosVoz, settings.voiceStyle) ? settings.voiceStyle : 'anime';
+    const cacheKey = nome + ':' + texto;
+    if (!audios.has(cacheKey)) {
+      if (audios.size >= 32) audios.delete(audios.keys().next().value);
+      audios.set(cacheKey, Promise.resolve().then(() => gerar(texto, estilosVoz[nome], chave, consultar)));
     }
-  };
+    try {
+      const audio = await audios.get(cacheKey);
+      if (!settings.voiceDisclosed && !disclosures.has(jid)) {
+        await send({ text: '🎙️ A voz da Zumy é gerada por inteligência artificial.' }, { citar: false });
+        update({ voiceDisclosed: true });
+        if (disclosures.size >= 500) disclosures.delete(disclosures.values().next().value);
+        disclosures.add(jid);
+      }
+      return await send({ audio, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+    } catch (error) {
+      audios.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  function enfileirar(context, callback) {
+    const fila = files.get(context.jid) || { tarefa: Promise.resolve(), total: 0 };
+    if (fila.total >= 8) return;
+    files.set(context.jid, fila);
+    fila.total++;
+    fila.tarefa = fila.tarefa.then(callback).catch(error => {
+      logger.warn({ status: error.status, code: error.code, name: error.name }, 'Falha na voz do ZUMY');
+    }).finally(() => {
+      if (--fila.total === 0) files.delete(context.jid);
+    });
+    return fila.tarefa;
+  }
+
+  function narrar(context, texto) {
+    if (!texto || (!chave && gerar === gerarAudio)) return;
+    return enfileirar(context, () => falar(context, texto));
+  }
+
+  function conversar(context) {
+    const entrou = enfileirar(context, async () => {
+      const saudacao = periodoDoDia(new Date(), timeZone);
+      const pedido = prepararResposta(context.text, saudacao);
+      const resposta = pedido.resposta || (chave && perguntar ? await perguntar(pedido.pergunta) : '') ||
+        'Vi sua mensagem: ' + pedido.pergunta + '. Minha conexão com a inteligência artificial está indisponível agora.';
+      const fala = String(resposta).trim().slice(0, 650);
+      try {
+        await falar(context, fala);
+      } catch (error) {
+        logger.warn({ status: error.status, code: error.code, name: error.name }, 'Falha na voz do ZUMY');
+        await context.reply(fala);
+      }
+    });
+    if (!entrou) return context.reply('Recebi sua mensagem. Estou respondendo às anteriores, tente novamente em instantes.');
+  }
+
+  async function testar(context) {
+    try {
+      await falar(context, 'Oi! Aqui é a Zumy. Minha voz está funcionando!');
+    } catch (error) {
+      logger.warn({ status: error.status, code: error.code, name: error.name }, 'Falha na voz do ZUMY');
+      if (!chave) return context.reply('Voz indisponível. Configure OPENAI_API_KEY no Render.');
+      if (error.code === 'insufficient_quota') return context.reply('Voz indisponível. A API da OpenAI está sem cota.');
+      if (error.status === 401) return context.reply('Voz indisponível. A OpenAI recusou a chave configurada no Render.');
+      return context.reply('Voz indisponível. ' + (error.status ? 'OpenAI retornou HTTP ' + error.status + '.' : 'Confira “Falha na voz do ZUMY” nos logs do Render.'));
+    }
+  }
+
+  return { narrar, conversar, testar };
 }

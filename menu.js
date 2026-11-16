@@ -17,7 +17,7 @@ export const sections = [
   ['PROPRIETÁRIO', '⚙️', 'reiniciar|bloquear|desbloquear|broadcast|grupos'],
   ['ANTI-CONTEÚDO', '🚫', 'antiimg|antivideo|antiaudio|antisticker|antiloc|anticontato|antidoc|anticatalogo|antinotas|antipayment|antienquete'],
   ['ANTI-SPAM E SEGURANÇA', '🛡️', 'antilinkgp|antilinkhard|antiflod|limitecaracteres|antipalavra|addpalavra|delpalavra|listapalavra'],
-  ['CONFIGURAÇÃO DO GRUPO', '⚙️', 'configurar|vozzumy|bemvindo|bemvindo2|legendabv|legendasaiu|legendabv2|legendasaiu2|legendasaiureset|legendasaiu2reset|autosticker|atodos|modobrincadeira|soadm|liberar|revogar|liberados|cooldown|limitecmd|tempocmd|msgtemp|advertir|advertencia|advertenciaauto|apelido'],
+  ['CONFIGURAÇÃO DO GRUPO', '⚙️', 'configurar|vozzumy|testarvoz|bemvindo|bemvindo2|legendabv|legendasaiu|legendabv2|legendasaiu2|legendasaiureset|legendasaiu2reset|autosticker|atodos|modobrincadeira|soadm|liberar|revogar|liberados|cooldown|limitecmd|tempocmd|msgtemp|advertir|advertencia|advertenciaauto|apelido'],
   ['FERRAMENTAS DE ADMINISTRAÇÃO', '👮', 'nomegp|admins|adms|totag|hidetag|del|blockcmdgp|unblockcmdgp|listbcmdgp|enquete|sorteionumero'],
   ['ATALHOS ZOOM', '🐉', 'zoom abre o grupo|zoom fecha o grupo|zoom remova esse|zoom marca todo mundo|zoom baixe música NOME|zoom forme um casal|zoom que horas são|zoom quantos membros tem aqui|zoom enquete: X ou Y'],
 ].map(([title, icon, commands]) => ({ title, icon, commands: commands.split('|') }));

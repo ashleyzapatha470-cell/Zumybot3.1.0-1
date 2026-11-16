@@ -111,10 +111,17 @@ function describeParticipantResult(result, reply) {
   return reply('O WhatsApp não confirmou a ação' + (status ? ' (' + status + ')' : '') + '.');
 }
 
+const comandoFalado = command => 'exclamação ' + (command || 'menu');
+
 function groupActions() {
-  const participantAction = action => async ({ sock, jid, target, reply }) => {
+  const participantAction = action => async ({ sock, jid, target, targetMember, settings, reply }) => {
     if (!target) return reply('Marque alguém ou responda à mensagem da pessoa.');
-    return describeParticipantResult(await sock.groupParticipantsUpdate(jid, [target], action), reply);
+    const result = await sock.groupParticipantsUpdate(jid, [target], action);
+    if (action !== 'remove' || Number(result?.[0]?.status) !== 200) return describeParticipantResult(result, reply);
+    const legenda = (settings.bemvindo2 ? settings.goodbyeText2 || settings.goodbyeText
+      : settings.goodbyeText || settings.goodbyeText2) || '{usuario} foi removido do grupo.';
+    const nome = targetMember?.name || targetMember?.notify || 'O participante';
+    return reply('Participante removido.', { fala: legenda.replaceAll('{usuario}', nome) });
   };
   const setGroup = mode => async ({ sock, jid, arg, reply }) => {
     const input = arg.toLowerCase();
@@ -169,7 +176,7 @@ function ownerActions(restart, ownerJid) {
     reiniciar: async ({ arg, reply }) => {
       if (arg !== 'confirmar') return reply('Para reiniciar o processo, use !reiniciar confirmar.');
       if (typeof restart !== 'function') return reply('O servidor ainda não forneceu a função de reinício ao bot.');
-      await reply('Reiniciando o ZUMY…');
+      await reply('Reiniciando o ZUMY…', { aguardarVoz: true });
       return restart();
     },
     bloquear: block('block'),
@@ -292,6 +299,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
       update({ voiceStyle: estilo });
       return reply('Voz da Zumy alterada para ' + estilo + '. Escreva “Zumy, tudo bem?” para testar.');
     },
+    testarvoz: context => responderVoz.testar(context.voz),
     ...groupSettings.commands,
     p: integrations.play,
   };
@@ -330,7 +338,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
       if (settings.advertenciaauto && actor) {
         await groupSettings.warn({
           settings: config.get(jid), target: actor, sock, jid,
-          update: changes => config.save(jid, { ...config.get(jid), ...changes }),
+          update,
           reply: text => sock.sendMessage(jid, { text }),
         }, reason);
       } else {
@@ -345,12 +353,6 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     return false;
   }
 
-  // Reconhece comandos digitados no telefone vinculado, sem executar respostas do bot.
-  const ownCommands = new Set([
-    ...ownerCommands, ...Object.keys(rank), ...Object.keys(relation),
-    'configurar', 'b', 'ban', 'kick', 'grupo', 'abrirgp', 'fechargp', 'fig', 'sticker', 'toimg',
-    'totag', 'vozzumy', 'play', 'p', 'ia', 'perguntar', 'resumir', 'traduzir',
-  ]);
   const outgoing = new Map();
   const pendingReplies = new Set();
 
@@ -369,7 +371,19 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const command = match ? normalizeCommand(match[1]) : '';
     const arg = match?.[2]?.trim() || '';
     if (msg.key.fromMe && (outgoing.has(jid + ':' + msg.key.id) || pendingReplies.has(jid + ':' + text))) return;
-    const send = async (message, { citar = true } = {}) => {
+    let narrou = false;
+    const falaAtiva = (usaPrefixo || Boolean(request)) && !['totag', 'testarvoz'].includes(command);
+    const update = changes => config.save(jid, { ...config.get(jid), ...changes });
+    const voz = { jid, text, settings, update,
+      send: (message, options) => send(message, { ...options, narrar: false }),
+      reply: text => send({ text }, { narrar: false }),
+    };
+    const narrarUmaVez = texto => {
+      if (!falaAtiva || narrou || !texto) return;
+      narrou = true;
+      return responderVoz.narrar(voz, texto);
+    };
+    const send = async (message, { citar = true, narrar = true, fala, aguardarVoz = false } = {}) => {
       const outgoingText = message.text?.trim();
       const marker = outgoingText && jid + ':' + outgoingText;
       if (marker) pendingReplies.add(marker);
@@ -379,14 +393,30 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
           if (outgoing.size >= 512) outgoing.delete(outgoing.keys().next().value);
           outgoing.set(jid + ':' + sent.key.id, true);
         }
+        if (narrar) {
+          const texto = message.text || message.caption;
+          const tarefaVoz = fala && narrarUmaVez(fala);
+          if (!fala && texto) {
+            const limpo = texto.replace(/https?:\/\/\S+/g, 'link na mensagem')
+              .replace(/@\d+/g, 'participante').replace(/[^\p{L}\p{N}\p{P}\p{Z}\r\n]/gu, '').trim();
+            const menuLongo = texto.includes('┎┅') || limpo.length > 420;
+            const tarefa = narrarUmaVez(menuLongo ? 'A resposta completa de ' + comandoFalado(command) + ' está na mensagem.' : limpo);
+            if (aguardarVoz) await tarefa;
+          } else if (message.audio) narrarUmaVez('Áudio enviado.');
+          else if (message.video) narrarUmaVez('Vídeo enviado.');
+          else if (message.sticker) narrarUmaVez('Figurinha enviada.');
+          else if (message.image) narrarUmaVez('Imagem enviada.');
+          else if (message.poll) narrarUmaVez('Enquete criada: ' + message.poll.name);
+          if (aguardarVoz && tarefaVoz) await tarefaVoz;
+        }
         return sent;
       } finally {
         if (marker) pendingReplies.delete(marker);
       }
     };
-    const reply = text => send({ text });
+    const reply = (text, options) => send({ text }, options);
     const menuInfo = { nickname: settings.nickname, user: msg.pushName };
-    if (msg.key.fromMe && !usaPrefixo && !chamadaVoz && !ownCommands.has(command) && !categoryCommands.includes(command) && !Object.hasOwn(basic, command)) return;
+    if (msg.key.fromMe && !usaPrefixo && !zoom && !chamadaVoz) return;
     const hasAccessRules = settings.soadm || settings.blockedCommands?.length || settings.cooldown;
     if (!hasAccessRules) {
       if (command === 'menu') return reply(menu(arg, menuInfo));
@@ -398,9 +428,6 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const automatic = settings.autosticker || (settings.atodos && /^@all(?:\s|$)/i.test(text));
     const knownCommand = declared.has(command) || categoryCommands.includes(command) || command === 'membros' || Object.hasOwn(basic, command);
     if (!activeSecurity && !automatic && !knownCommand && !usaPrefixo && !chamadaVoz) return;
-    // Menus e comandos escritos na conta vinculada são processados só quando previstos.
-    if (msg.key.fromMe && knownCommand && !ownCommands.has(command) &&
-        !categoryCommands.includes(command) && !Object.hasOwn(basic, command)) return;
     const ctx = (content.extendedTextMessage || content.imageMessage || content.videoMessage || content.documentMessage)?.contextInfo;
     const mentions = ctx?.mentionedJid || [];
     const botIds = [sock.user?.id, sock.user?.lid, sock.user?.phoneNumber,
@@ -441,7 +468,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     if (!command && settings.atodos && isAdmin && /^@all(?:\s|$)/i.test(text)) {
       return send({ text: text.slice(4).trim() || 'Atenção, pessoal!', mentions: members });
     }
-    if (chamadaVoz && (!settings.soadm || isAdmin)) return responderVoz({ jid, text, settings, update: changes => config.save(jid, { ...config.get(jid), ...changes }), send, reply });
+    if (chamadaVoz) return responderVoz.conversar(voz);
     if (usaPrefixo && !knownCommand) {
       const exemplos = {
         configurar: '!configurar', play: '!play lista', fig: '!fig (responda a uma foto)',
@@ -504,11 +531,11 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const mediaMessage = isMedia(content) || !isMedia(quotedContent) ? msg : quoted;
     const source = contentOf(mediaMessage.message);
     const context = {
-      sock, jid, arg, reply, send, meta, actor, isAdmin, botAdmin, commandKey: msg.key, target: targetMember?.id || target, targetPhone, settings, quotedKey, source,
+      sock, jid, arg, reply, send, meta, actor, isAdmin, botAdmin, commandKey: msg.key, target: targetMember?.id || target, targetMember, targetPhone, settings, quotedKey, source, voz,
       members,
       admins: participants.filter(member => member.admin === 'admin' || member.admin === 'superadmin' ||
         member.isAdmin === true || member.isSuperAdmin === true).map(member => member.id).filter(Boolean),
-      update: changes => config.save(jid, { ...config.get(jid), ...changes }),
+      update,
       quotedText: chatText(contentOf(quoted?.message)),
       download: download => download(mediaMessage),
       mention: (prefix, ids, numbered = false) => send({
@@ -522,7 +549,9 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     }
     if (command !== 'broadcast') {
       try {
-        return await handlers[command](context);
+        const result = await handlers[command](context);
+        narrarUmaVez('Comando ' + comandoFalado(command) + ' concluído.');
+        return result;
       } catch (error) {
         const status = error?.output?.statusCode ?? error?.data?.code;
         if (adminCommands.has(command) && Number(status) === 403) {
