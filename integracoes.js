@@ -77,7 +77,15 @@ async function confirmMp3(audio) {
     throw new Error('O arquivo recebido do Jamendo não contém áudio MP3 válido.');
   } finally {
     await rm(folder, { recursive: true, force: true });
-  }
+  }const downloadUrl = new URL('https://api.jamendo.com/v3.0/tracks/file/');
+downloadUrl.search = new URLSearchParams({
+  client_id: query.get('client_id'),
+  id: String(track.id),
+  action: 'download',
+  audioformat: 'mp32',
+}).toString();
+
+const audio = await downloadJamendo(downloadUrl.href);
 }
 
 async function readAudio(response, { allowGenericMp3 = false } = {}) {
