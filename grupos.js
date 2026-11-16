@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { botName, categoryCommands, menu, normalizeCommand, ownerName, ownerNumber, prefix, sections } from './menu.js';
 import { createGames } from './jogos.js';
 import { createIntegrations } from './integracoes.js';
-import { chamouZumy, criarVoz } from './voz.js';
+import { chamouZumy, criarVoz, estilosVoz } from './voz.js';
 import { createGroupSettings, extraAdmin } from './config-grupo.js';
 
 const pick = values => values[randomInt(values.length)];
@@ -62,7 +62,7 @@ const flags = {
 const ownerCommands = new Set(['reiniciar', 'bloquear', 'desbloquear', 'broadcast', 'grupos']);
 const adminCommands = new Set([
   'b', 'ban', 'kick', 'd', 'promover', 'rebaixar', 'grupo', 'abrirgp', 'fechargp',
-  'marcar', 'linkgp', 'add', 'configurar', ...Object.keys(flags), ...extraAdmin,
+  'marcar', 'linkgp', 'add', 'configurar', 'vozzumy', ...Object.keys(flags), ...extraAdmin,
 ]);
 const basic = {
   menu: ({ arg, reply }) => reply(menu(arg)),
@@ -228,9 +228,13 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
   const recent = new Map();
   const activeBroadcasts = new Set();
   const lastCommand = new Map();
-  const responderVoz = criarVoz({ env, logger, gerar: generateVoice });
   const games = createGames();
   const integrations = createIntegrations({ downloadMedia, logger, env });
+  const responderVoz = criarVoz({
+    env, logger, gerar: generateVoice,
+    perguntar: arg => integrations.ia({ arg, reply: resposta => resposta }, 'ia'),
+  });
+
   const declared = new Set(sections.flatMap(section => section.commands
     .filter(command => !command.startsWith('zoom ')).map(command => command.split(' ')[0])));
   const groupSettings = createGroupSettings({ config, integrations, known: declared, logger });
@@ -280,6 +284,14 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     ...groupActions(), ...security, ...rank, ...relation, ...games, ...jokeActions, ...integrations,
     ...ownerActions(restart, ownerJid),
     configurar: ({ reply, settings }) => reply(menu('configuracao', { nickname: settings.nickname })),
+    vozzumy: ({ arg, settings, update, reply }) => {
+      const estilo = arg.toLowerCase();
+      const opcoes = Object.keys(estilosVoz).join(', ');
+      if (!estilo) return reply('Voz da Zumy: ' + (settings.voiceStyle || 'anime') + '. Opções: ' + opcoes + '. Exemplo: !vozzumy doce');
+      if (!Object.hasOwn(estilosVoz, estilo)) return reply('Voz inválida. Use !vozzumy anime, !vozzumy doce, !vozzumy calma ou !vozzumy grave.');
+      update({ voiceStyle: estilo });
+      return reply('Voz da Zumy alterada para ' + estilo + '. Escreva “Zumy, tudo bem?” para testar.');
+    },
     ...groupSettings.commands,
     p: integrations.play,
   };
@@ -337,7 +349,7 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
   const ownCommands = new Set([
     ...ownerCommands, ...Object.keys(rank), ...Object.keys(relation),
     'configurar', 'b', 'ban', 'kick', 'grupo', 'abrirgp', 'fechargp', 'fig', 'sticker', 'toimg',
-    'totag', 'play', 'p', 'ia', 'perguntar', 'resumir', 'traduzir',
+    'totag', 'vozzumy', 'play', 'p', 'ia', 'perguntar', 'resumir', 'traduzir',
   ]);
   const outgoing = new Map();
   const pendingReplies = new Set();
@@ -429,12 +441,12 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     if (!command && settings.atodos && isAdmin && /^@all(?:\s|$)/i.test(text)) {
       return send({ text: text.slice(4).trim() || 'Atenção, pessoal!', mentions: members });
     }
-    if (chamadaVoz && (!settings.soadm || isAdmin)) return responderVoz({ jid, send, reply });
+    if (chamadaVoz && (!settings.soadm || isAdmin)) return responderVoz({ jid, text, settings, update: changes => config.save(jid, { ...config.get(jid), ...changes }), send, reply });
     if (usaPrefixo && !knownCommand) {
       const exemplos = {
         configurar: '!configurar', play: '!play lista', fig: '!fig (responda a uma foto)',
         ia: '!ia Diga olá ao grupo', totag: '!totag Atenção, pessoal!', ban: '!ban @participante',
-        msgtemp: '!msgtemp 24h', reiniciar: '!reiniciar',
+        msgtemp: '!msgtemp 24h', vozzumy: '!vozzumy anime', reiniciar: '!reiniciar',
       };
       const candidato = Object.keys(exemplos).find(nome => command.length >= 2 && nome.startsWith(command));
       const nome = match?.[1]?.slice(0, 40);
