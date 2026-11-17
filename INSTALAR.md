@@ -1,79 +1,45 @@
-# Zumybot · Painel v10
+# Zumybot · Controle e reconexão
 
-## Atualizar no GitHub
-
-Envie os arquivos extraídos deste pacote para a raiz da branch `main` do repositório Zumybot3.1.0. O `package.json` inclui a biblioteca de QR Code. Mantenha os arquivos MP3 e M4A que já estão no repositório.
-
-Abra o serviço do bot no Render e publique o último commit. Em `/health`, a revisão deve aparecer como `painel-v10`.
-
-## Persistir o cadastro e o WhatsApp
-
-Mantenha `ADMIN_TOKEN` configurado como segredo no Render. Use seu valor somente na página `/parear`.
-
-Confirme em **Disks** que o serviço tem um disco persistente e que `SESSION_DIR` aponta para uma pasta dentro do ponto de montagem. Exemplo: disco montado em `/var/data` e variável `SESSION_DIR=/var/data/zumy-session`. Se já usa uma pasta persistente, mantenha o endereço atual para reaproveitar a sessão. Se a pasta anterior era temporária, a primeira instalação no novo disco pode exigir pareamento. A pasta guarda as credenciais da conexão, o cadastro do dono e as configurações de cada grupo em arquivos separados.
-
-## Usar o painel
-
-1. Em `/parear`, informe o `ADMIN_TOKEN`. Na seção **Dono do bot**, toque em **Carregar cadastro**, informe o nome e telefone da conta responsável e salve. Se o WhatsApp apresentar essa conta apenas por LID, mande `!meuid` com ela e salve o LID que o bot enviar em privado. O número do dono pode ser diferente do número usado para parear.
-2. Teste `!dono` para confirmar o nome e `!reiniciar` pela conta do dono para verificar a permissão. Pare na solicitação de confirmação para evitar reiniciar.
-3. Se o WhatsApp estiver desconectado, use **Mostrar QR Code** ou **Gerar código** com o número da conta do bot. Use **Preparar nova sessão** quando a sessão estiver encerrada e o painel indicar essa opção.
-4. Com o WhatsApp conectado, toque em **Sincronizar grupos**. Selecione o grupo e ajuste o apelido, o modo de boas-vindas e as legendas. As alterações são aplicadas no grupo selecionado assim que forem salvas.
-5. O menu de música inclui `!play lista`, `!play artista NOME` e `!play archive MÚSICA | ARTISTA`.
-
-Salvar o cadastro do dono não reinicia o processo nem altera o pareamento. Se o WhatsApp desvincular a sessão, será preciso vincular de novo.
-
-## Comandos e exemplos da v10
-
-### Administração
+## Comandos
 
 | Comando | Uso |
 |---|---|
-| `!sync` / `!sync 0` | Ativa ou pausa níveis, ranking diário, saudações e lembretes do grupo. |
-| `!configurar grupo` | Abre o menu de configuração. |
-| `!imagembv` | Responda a uma foto de até 1 MB. Ative as boas-vindas com `!bemvindo 1` ou `!bemvindo2 1`. Use `!imagembv reset` para remover a imagem. |
-| `!castigo 24h @participante` | Apaga novas mensagens da pessoa durante o prazo. Aceita minutos, horas e dias, até sete dias. O bot deve ser administrador. |
-| `!liberarcastigo @participante` | Encerra o castigo. Também aceita `!tliberarcastogo @participante`. |
-| `!limpar` | Apaga a mensagem à qual você respondeu, conforme as permissões do WhatsApp. |
-| `!listban` | Mostra os últimos banimentos feitos pelo bot e a lista de bloqueio. |
-| `!listanegra @participante` | Bloqueia a próxima entrada da conta. Também aceita `!listanegram`. |
-| `!listabranca @participante` | Adiciona a conta à lista branca. Também aceita `!listanranca`. |
-| `!tirardalista @participante` | Retira a conta das duas listas. Também aceita `!tirardalistar`. |
-| `!ban @participante` / `!b @participante` | Remove a conta. Também aceita o comando colado à menção, se for uma marcação válida. |
-| `!autorepro 1` / `!autorepro 0` | Liga ou desliga a resposta automática quando alguém chama a Zumy. Aceita `!aurorepro1` e `!autorepo 0`. |
-| `!antiporno 1` / `!antiporno 0` | Filtra localmente palavras em textos e legendas. Use `!addpalavra TERMO` para cadastrar mais. |
-| `!autodownload 1` / `!autodownload 0` | Liga ou desliga o envio automático de links elegíveis do Archive ou da origem de áudio configurada. Aceita `!autodowload`. |
-| `!listapalavrao` | Mostra as palavras cadastradas com `!addpalavra`. |
-| `!marcar MENSAGEM` / `!totag MENSAGEM` | Marca com os nomes disponíveis e alterna o tema. `!totag` também aceita responder a um aviso. |
+| `!ativar bot` | Somente o dono. Tira o bot do estado de pausa enquanto houver conexão com o WhatsApp. Os comandos continuam sujeitos às permissões do grupo e às integrações configuradas. |
+| `!reiniciar bot` | Somente o dono. Mostra a instrução de confirmação. Use `!reiniciar bot confirmar` para reiniciar. A forma anterior `!reiniciar confirmar` também funciona. |
+| `!zumy` | Envia saudação com data e hora. Use `!zumy bomdia` para pedir especificamente “Bom dia”. Usa `BOT_TIMEZONE`, com padrão Fortaleza. |
+| `!limpar` | Responda à mensagem que deseja apagar. |
+| `!limpar tudo confirmar` | Solicita a exclusão das mensagens recentes recebidas naquele grupo que o bot registrou desde que iniciou. Exige administrador e bot como administrador. |
 
-### Usuários
+A limpeza em lote mantém apenas identificadores em memória, sem guardar o texto. O limite é de até 100 mensagens por grupo nas últimas 24 horas, e a sessão inicia sem histórico de limpeza. O WhatsApp aplica suas regras de exclusão. A limpeza do histórico inteiro para todos não está disponível pelo bot.
 
-| Comando | Uso |
+## Dono e sessão
+
+Se o bot já tem o painel v9 ou posterior, confira a seção **Dono do bot** em `/parear`. Salve o número da conta responsável com DDI e DDD. Se preciso, a mesma conta usa `!meuid` e preenche o LID recebido em privado. Nas versões que ainda usam variáveis de ambiente, configure `OWNER_NUMBER` e, quando necessário, `OWNER_LID` no Render.
+
+Se a conexão ficar travada em `conectando` por 75 segundos, o bot encerra a tentativa e abre outra com as credenciais existentes. Para preservar essas credenciais entre reinícios e deploys, `SESSION_DIR` precisa ficar no disco persistente do Render. Mantenha apenas uma instância usando a sessão. Se o WhatsApp revogar o vínculo, será necessário parear novamente.
+
+## Instalar na versão atual
+
+Use a cópia mais recente do Zumybot. A agenda foi preparada para a estrutura da v10, que já tem rankings com imagem e a rotina de inatividade.
+
+1. Execute primeiro `node /caminho/aplicar-controle.mjs /caminho/Zumybot3.1.0 --check` e depois sem `--check`. Se você já instalou o controle, pule esse script.
+2. Execute `node /caminho/aplicar-agenda.mjs /caminho/Zumybot3.1.0 --check` e depois sem `--check`.
+3. Envie ao GitHub apenas `grupos.js`, `menu.js`, `server.js`, `config-grupo.js` e `integracoes.js`. Publique o último commit no Render.
+4. Confira `"revisao":"agenda-v12"` em `/health`.
+
+### Agenda, antifanta e reações
+
+| Comando | O que faz |
 |---|---|
-| `!espiar @participante` | Mostra o perfil disponível no grupo e a última atividade registrada. |
-| `!aura` | Sorteia uma aura de brincadeira. |
-| `!confessar MENSAGEM` | Publica a mensagem no grupo. |
-| `!banfake @participante` | Faz uma brincadeira de banimento. |
-| `!ranklevel`, `!rankativos`, `!rankdia` / `!rankdodia` | Mostra níveis, patentes, interações e percentual no ranking. |
-| `!rank mentiroso` / `!rankmentiroso` | Sorteia um ranking fictício. |
-| `!rankgay participar`, `!ranklesbica participar` | Entra voluntariamente no ranking escolhido. Use o comando sem argumento para consultar e com `sair` para sair. |
-| `!topfood` | Atalho para o ranking de atividade. |
-| `!checkativos`, `!atividades ✅`, `!inativos ❌` | Consultam a atividade registrada no grupo. |
-| `!previsão do tempo Fortaleza`, `!calor Fortaleza`, `!chuva Fortaleza` | Consultam clima, temperatura e chuva pelo Open-Meteo. |
-| `!data e hora` | Mostra o dia e a hora no fuso do bot. |
-| `!signo Leão` | Envia um horóscopo de brincadeira. |
-| `!perfil` / `!perfil 2` | Mostra foto disponível, interações, nível e patente. A opção 2 inclui a última atividade. |
-| `!amizade @pessoa`, `!pegar @pessoa`, `!namorar @pessoa` | Enviam um pedido. Só a pessoa marcada pode responder em até cinco minutos. |
-| `!aceitar namorar S` | Aceita o pedido. Use `N` para recusar. Também aceita `amizade` e `pegar`. |
-| `!cancelarpedido @pessoa` / `!terminanamoro T` | Cancela um pedido seu ou termina o namoro de brincadeira. |
-| `!currículo @pessoa` | Gera um currículo do amor de brincadeira. |
-| `!dogolpe`, `!dogolpe @pessoa`, `!golpe @pessoa` | Sorteiam uma brincadeira com percentual. |
+| `!programar` | Mostra os horários do grupo. |
+| `!programar fechamento 23:00` | Fecha o grupo todos os dias às 23h. |
+| `!programar abertura 07:00` | Abre o grupo todos os dias às 7h. |
+| `!mensagem fechamento Boa noite, grupo!` | Salva o aviso de fechamento. |
+| `!mensagem abertura Bom dia, galera!` | Salva o aviso de abertura. |
+| `!programar fechamento 23:00` seguido de ` \| Boa noite!` | Salva o horário e o aviso na mesma mensagem. |
+| `!programar abertura off` | Cancela o horário de abertura. Para fechar, use `!programar fechamento off`. |
+| `!antifanta 1` / `!antifanta 0` | Permite ou pausa os lembretes de inatividade. `!sync` ativa o registro de atividade. `!atifanta 0` também é aceito. |
+| `!reações 1` / `!reações 0` | Liga ou desliga a reação 👀 aos comandos do menu. |
+| `!reações 👍` | Responda à mensagem de outro participante para o bot reagir a ela. |
 
-Rankings usam imagem temática quando o FFmpeg está disponível. O ranking de atividade usa o percentual de interações registradas. Brincadeiras usam percentuais sorteados.
-
-### Rotinas depois de `!sync`
-
-- **6h, 12h e 18h** — Zumy cumprimenta, informa data e hora e usa o estilo anime quando a voz estiver disponível.
-- **20h** — ranking do dia.
-- **Após duas horas de inatividade** — uma marcação por período de ausência. Quando a pessoa volta a interagir, o bot pode marcar novamente após outra ausência.
-
-O fuso padrão é Fortaleza. As rotinas são verificadas a cada minuto com o WhatsApp conectado. `!sync 0` pausa essas rotinas naquele grupo.
+Os horários usam `BOT_TIMEZONE` (Fortaleza por padrão). O bot precisa estar conectado e ser administrador no horário programado. Os cartões dos rankings usam o título e as porcentagens da categoria, com cores e elementos gráficos gerados para cada comando.
