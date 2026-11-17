@@ -538,9 +538,10 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
     const text = chatText(content).trim();
     const settings = config.get(jid);
     const owner = getOwner?.() || defaultOwner;
-    const ownerJid = userJid(owner.number);
+    const ownerJid = userJid(String(owner.number || '').replace(/\D/g, ''));
     const ownerLabel = String(owner.name || ownerName).replace(/[\r\n*]/g, ' ').trim().slice(0, 60) || ownerName;
-    const ownerLid = /^\d+@lid$/.test(owner.lid || '') ? owner.lid : undefined;
+    const normalizedOwnerLid = normalizeJid(String(owner.lid || '').trim());
+    const ownerLid = /^\d+@lid$/.test(normalizedOwnerLid) ? normalizedOwnerLid : undefined;
     const zoom = /^zoom(?:[\s,:]+([\s\S]+))?$/i.exec(text);
     let request = zoom ? parseZoom(zoom[1]) : text.startsWith(prefix) ? text.slice(prefix.length).trim() : '';
     request = request
@@ -719,7 +720,13 @@ export function createGroupHandler({ folder, logger = console, downloadMedia, re
         senderHasLid: senderIds.some(id => id.endsWith('@lid')),
         ownerLidConfigured: Boolean(ownerLid),
       }, 'Identidade do dono não confirmada');
-      return reply('Comando exclusivo do dono do ZUMY.');
+      return reply('Não consegui confirmar esta conta como dona do ZUMY.\n' +
+        'Cadastro do painel carregado: ' + (getOwner?.() ? 'sim' : 'não') +
+        '\nLID cadastrado: ' + (ownerLid ? 'sim' : 'não') +
+        '\nTelefone recebido: ' + (senderIds.some(id => id.endsWith('@s.whatsapp.net')) ? 'sim' : 'não') +
+        '\nLID recebido: ' + (senderIds.some(id => id.endsWith('@lid')) ? 'sim' : 'não') +
+        '\nMensagem da conta vinculada ao bot: ' + (msg.key.fromMe ? 'sim' : 'não') +
+        '\nEnvie !meuid neste mesmo grupo e compare o resultado privado com o cadastro carregado no painel.');
     }
     if (adminCommands.has(command) && !isAdmin) return reply('Comando exclusivo dos administradores.');
     if (botAdmin === false && ['b', 'ban', 'kick', 'abrirgp', 'fechargp', 'grupo'].includes(command)) {
