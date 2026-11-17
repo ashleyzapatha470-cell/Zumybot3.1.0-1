@@ -8,3 +8,4 @@ COPY . .
 ENV NODE_ENV=production
 EXPOSE 3000
 CMD ["npm","start"]
+RUN for arquivo in *.js; do echo "Verificando: $arquivo"; node --check "$arquivo" || exit 1; done
