@@ -47,7 +47,7 @@ async function requestJson(url, options) {
   const response = await fetch(url, { ...options, signal: AbortSignal.timeout(12000) });
   if (!response.ok) throw new Error('Serviço externo retornou HTTP ' + response.status);
   return response.json();
-}play LINK_DO_APPLE_MUSIC
+}
 
 const maxAudioBytes = 12 * 1024 * 1024;
 const audioTypes = new Map([
