@@ -1,0 +1,34 @@
+{
+  "perguntas": [
+    {
+      "pergunta": "Como faço uma pergunta ao Zumy?",
+      "variacoes": ["Como uso a IA?", "Como funciona o comando ia?"],
+      "resposta": "Digite !ia seguido da sua pergunta. Exemplo: !ia como escrevo uma mensagem de aniversário?"
+    },
+    {
+      "pergunta": "Em que você pode me ajudar?",
+      "variacoes": ["O que você faz?", "Para que serve a IA?"],
+      "resposta": "Posso explicar assuntos, sugerir ideias, revisar textos e ajudar a escrever mensagens. Diga o que você precisa e inclua os detalhes importantes."
+    },
+    {
+      "pergunta": "Você pode revisar meu texto?",
+      "variacoes": ["Pode corrigir minha mensagem?", "Como melhoro meu texto?"],
+      "resposta": "Envie o texto e diga se quer corrigir erros, deixar a mensagem mais clara ou mudar o tom."
+    },
+    {
+      "pergunta": "Você pode resumir um texto?",
+      "variacoes": ["Pode fazer um resumo?", "Como peço um resumo?"],
+      "resposta": "Cole o texto na mensagem e diga se prefere um resumo curto ou uma lista com os pontos principais."
+    },
+    {
+      "pergunta": "Você pode traduzir uma frase?",
+      "variacoes": ["Como traduzo um texto?", "Você traduz?"],
+      "resposta": "Envie a frase e diga para qual idioma quer traduzir. Exemplo: !ia traduza 'até amanhã' para inglês."
+    },
+    {
+      "pergunta": "O que faço se você entender minha pergunta errado?",
+      "variacoes": ["A resposta saiu errada. E agora?", "Como reformulo minha pergunta?"],
+      "resposta": "Faça a pergunta novamente com mais contexto. Se puder, diga qual parte da resposta precisa ser corrigida."
+    }
+  ]
+}
