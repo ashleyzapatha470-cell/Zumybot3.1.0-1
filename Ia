@@ -1,0 +1,11 @@
+import os
+import websockets
+
+async def conectar_agente():
+    url = "wss://api.x.ai/v1/realtime?model=grok-voice-latest"
+    async with websockets.connect(
+        url,
+        additional_headers={"Authorization": f"Bearer {os.environ['XAI_API_KEY']}"}
+    ) as ws:
+        # Lógica de envio e recebimento de áudio/eventos do bot
+        pass
