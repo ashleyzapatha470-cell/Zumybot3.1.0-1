@@ -1,4 +1,5 @@
-    linkgp: async ({ sock, jid, meta, reply, send }) => {
+
+async ({ sock, jid, meta, reply, send }) => {
       let codigo;
       try {
         codigo = await sock.groupInviteCode(jid);
