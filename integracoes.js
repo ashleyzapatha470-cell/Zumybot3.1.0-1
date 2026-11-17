@@ -8,7 +8,7 @@ import { prefix } from './menu.js';
 const ffmpeg = promisify(execFile);
 const maxMediaBytes = 8 * 1024 * 1024;
 
-async function convert({ data, text, animated = false, toImage = false, color = '151827' }) {
+async function convert({ data, text, animated = false, toImage = false, color = '151827', decoration = '' }) {
   const folder = await mkdtemp(join(tmpdir(), 'zumy-'));
   try {
     const output = join(folder, toImage ? 'out.png' : 'out.webp');
@@ -23,7 +23,7 @@ async function convert({ data, text, animated = false, toImage = false, color = 
       const filter = animated ? colors.map((color, index) =>
         draw + color + ":enable='between(t," + index / 2 + ',' + (index / 2 + 0.49) + ")'").join(',') :
         draw + 'ffffff';
-      args.push('-vf', filter);
+      args.push('-vf', decoration ? decoration + ',' + filter : filter);
     } else {
       await writeFile(input, data);
       args.push('-protocol_whitelist', 'file', '-i', input);
@@ -496,7 +496,16 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
       line += (line ? ' ' : '') + word.slice(0, 20);
     }
     if (line) rows.push(line);
-    return convert({ text: 'ZUMY · RANKING\n\n' + rows.join('\n') + '\n\nTOP 1 · ' + score + '%', toImage: true, color: palette[hash % palette.length] });
+    const accent = palette[(hash + 3) % palette.length];
+    const bars = 2 + (hash % 6);
+    const decoration = [
+      'drawbox=x=16:y=16:w=480:h=480:color=0x' + accent + ':t=6',
+      ...Array.from({ length: bars }, (_, n) =>
+        'drawbox=x=' + (42 + n * 49) + ':y=' + (72 + ((hash >>> (n + 1)) % 18)) +
+        ':w=35:h=5:color=white@0.5:t=fill'),
+      'drawbox=x=42:y=420:w=' + Math.max(8, Math.round(428 * score / 100)) + ':h=12:color=white@0.7:t=fill',
+    ].join(',');
+    return convert({ text: 'ZUMY · RANKING\n\n' + rows.join('\n') + '\n\nTOP 1 · ' + score + '%', toImage: true, color: palette[hash % palette.length], decoration });
   }
 
   return Object.fromEntries([

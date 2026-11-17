@@ -634,7 +634,7 @@ export function createCommunity({ config, integrations, env, logger, responderVo
       try {
         const slots = settings.communitySlots || {};
         const activity = stats(jid);
-        const waiting = Object.entries(activity).filter(([, x]) => !x.reminded && at - x.last >= inactivityMs);
+        const waiting = settings.antifanta === false ? [] : Object.entries(activity).filter(([, x]) => !x.reminded && at - x.last >= inactivityMs);
         const greeting = ({ 6:'Bom dia', 12:'Boa tarde', 18:'Boa noite' })[h.hour];
         const greetNow = greeting && slots.greeting !== h.date + ':' + h.hour;
         const rankNow = h.hour === 20 && slots.rank !== h.date;

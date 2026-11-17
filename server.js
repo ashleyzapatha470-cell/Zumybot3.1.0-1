@@ -59,6 +59,47 @@ let status='iniciando',sock=null,qr=null,attempt=0,paused=false;
 let reconnectTimer;
 let pairingInProgress = false;
 const logger=pino({level:process.env.LOG_LEVEL||'info'});
+const limpeza = new Map();
+const limpando = new Set();
+const janelaLimpeza = 24 * 60 * 60_000;
+function registraParaLimpeza(msg, now) {
+  const { remoteJid, id, participant } = msg.key;
+  const sentAt = Number(msg.messageTimestamp) * 1000;
+  if (!id || !participant || !Number.isFinite(sentAt) || sentAt > now + 10_000 || now - sentAt > janelaLimpeza) return;
+  if (msg.message.protocolMessage || msg.message.reactionMessage || msg.message.senderKeyDistributionMessage &&
+      Object.keys(msg.message).length === 1) return;
+  let recent = limpeza.get(remoteJid);
+  if (!recent) {
+    if (limpeza.size >= 150) limpeza.delete(limpeza.keys().next().value);
+    recent = new Map();
+    limpeza.set(remoteJid, recent);
+  }
+  if (recent.size >= 100) recent.delete(recent.keys().next().value);
+  recent.set(id, { at: sentAt, key: msg.key });
+}
+
+async function limparRecentes(socket, jid, comando) {
+  if (limpando.has(jid)) return { busy: true };
+  const recent = limpeza.get(jid);
+  if (!recent) return { sent: 0, failed: 0 };
+  const entries = [...recent.entries()].filter(([id, item]) => id !== comando && Date.now() - item.at <= janelaLimpeza);
+  let sent = 0, failed = 0;
+  limpando.add(jid);
+  try {
+    for (const [id, item] of entries) {
+      if (socket !== sock || status !== 'conectado') {
+        failed += entries.length - sent - failed;
+        break;
+      }
+      try {
+        await socket.sendMessage(jid, { delete: item.key });
+        recent.delete(id);
+        sent++;
+      } catch { failed++; }
+    }
+    return { sent, failed };
+  } finally { limpando.delete(jid); }
+}
 const handleGroup = createGroupHandler({
   folder,
   logger,
@@ -66,6 +107,8 @@ const handleGroup = createGroupHandler({
   getOwner: () => ownerSaved,
   downloadMedia: msg => downloadMediaMessage(msg, 'buffer', {}),
   restart: () => process.exit(1),
+  activate: () => { paused = false; },
+  bulkDelete: limparRecentes,
 });
 const protect=(req,res,next)=>{if(!adminToken)return res.status(503).json({error:'Configure ADMIN_TOKEN em Environment no Render'});if(req.get('authorization')!==`Bearer ${adminToken}`)return res.status(401).json({error:'Token incorreto. Use o ADMIN_TOKEN do serviço ZUMYBOT-3.0.'});next()};
 app.get('/',(_req,res)=>res.type('html').send(`<html lang="pt-br"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ZUMY</title><body style="font:18px system-ui;background:#101a28;color:white;padding:24px"><h1>🤖 ZUMY</h1><p>Status público: <b>${status}</b></p><p>Use /health para conferir a conexão. <a href="/parear" style="color:#8af0bb">Abrir painel de autenticação e configuração</a>.</p></body></html>`));
@@ -288,7 +331,7 @@ app.get('/parear', (_req, res) => {
 </script>
 </html>`);
 });
-app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'painel-v10'}));
+app.get('/health',(_req,res)=>res.json({ok:true,status,funcoes:paused?'pausadas':'ativas',prefixo:prefix,revisao:'agenda-v12'}));
 app.get('/admin/owner', protect, (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json(ownerSaved || defaultOwner);
@@ -467,6 +510,17 @@ async function startConnection() {
 async function connect(){
   status='conectando';const {state,saveCreds}=await useMultiFileAuthState(activeAuthFolder());
   const current=makeWASocket({auth:state,logger:logger.child({module:'baileys'}),printQRInTerminal:false,markOnlineOnConnect:false, syncFullHistory:false});sock=current;
+  const connectWatchdog = setTimeout(() => {
+    if (current !== sock || status !== 'conectando') return;
+    logger.warn('Conexão demorou mais de 75 segundos; tentando novamente com a sessão salva');
+    sock = null;
+    qr = null;
+    status = 'aguardando_reconexao';
+    scheduleReconnect();
+    try { current.end(new Error('Tempo limite para conexão')); }
+    catch (error) { logger.warn({ name: error.name }, 'Falha ao fechar conexão travada'); }
+  }, 75000);
+  connectWatchdog.unref();
   const processed = new Map();
   let connectedAt = 0;
   current.ev.on('creds.update', () => {
@@ -474,6 +528,7 @@ async function connect(){
   });
   current.ev.on('connection.update',({connection,lastDisconnect,qr:nextQr})=>{
     if(current!==sock)return;
+    if(nextQr || connection === "open" || connection === "close") clearTimeout(connectWatchdog);
     if(nextQr){status='aguardando_pareamento';qr=nextQr;logger.info('QR de pareamento disponível')}
     if(connection==='open'){connectedAt=Date.now();status='conectado';qr=null;attempt=0;logger.info('ZUMY WhatsApp conectado')}
     if(connection==='close'){
@@ -520,14 +575,14 @@ async function connect(){
   }
 
   current.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (paused || current !== sock || !['notify', 'append'].includes(type)) return;
+    if (current !== sock || !['notify', 'append'].includes(type)) return;
     const now = Date.now();
     for (const [key, receivedAt] of processed) {
       if (now - receivedAt <= 120_000) break;
       processed.delete(key);
     }
     for (const msg of messages || []) {
-      if (paused || current !== sock) break;
+      if (current !== sock) break;
       const { remoteJid, remoteJidAlt, id, fromMe } = msg?.key || {};
       if (!msg?.message || !remoteJid) continue;
       const text = commandText(msg.message);
@@ -536,6 +591,8 @@ async function connect(){
         /^\d+(?::\d+)?@(lid|s\.whatsapp\.net|c\.us)$/.test(remoteJid) &&
         text.toLowerCase() === prefix + 'meuid';
       if (!group && !identityRequest) continue;
+      const control = group && new RegExp("^" + prefix + "ativar(?:\\s+bot)?$", "i").test(text);
+      if (paused && !control) continue;
       const isCommand = text.startsWith(prefix) || /^zoom(?:$|[\s,:])/i.test(text);
       const hasTrigger = isCommand || chamouZumy(text);
       if (type === 'append' || (fromMe && hasTrigger)) {
@@ -549,6 +606,7 @@ async function connect(){
         if (processed.size >= 2048) processed.delete(processed.keys().next().value);
         processed.set(key, now);
       }
+      if (group && type === 'notify' && !fromMe) registraParaLimpeza(msg, now);
       if (isCommand) logger.info({ type, fromMe: Boolean(fromMe) }, 'Comando recebido do WhatsApp');
       try {
         if (identityRequest) {
@@ -575,4 +633,13 @@ const communityTimer = setInterval(async () => {
   finally { communityRunning = false; }
 }, 60_000);
 communityTimer.unref();
+let agendaRunning = false;
+const agendaTimer = setInterval(async () => {
+  if (agendaRunning || paused || status !== 'conectado' || !sock) return;
+  agendaRunning = true;
+  try { await handleGroup.runAgenda(sock); }
+  catch (error) { logger.warn({ name: error.name }, 'Falha ao verificar a agenda dos grupos'); }
+  finally { agendaRunning = false; }
+}, 20000);
+agendaTimer.unref();
 void startConnection();
