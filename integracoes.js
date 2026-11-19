@@ -383,7 +383,7 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
 
   const youtubeActive = new Set();
 
-  async function playYoutube({ arg, reply, send, jid }) {
+  async function playApple({ arg, reply, send, jid }) {
     if (!arg.trim() || arg.length > 150) return reply('Use !play NOME DA MÚSICA, com até 150 caracteres.');
     if (youtubeActive.has(jid) || youtubeActive.size >= 2) return reply('Há downloads em andamento. Tente novamente em instantes.');
     youtubeActive.add(jid);
