@@ -552,13 +552,26 @@ async function connect(){
         }
         return;
       }
-      if(code===DisconnectReason.connectionReplaced){
-        status='conexao_substituida';
-        logger.warn('Conexão substituída. Confira se a sessão está aberta em outra instância.');
+            if (code === DisconnectReason.loggedOut) {
+        status = 'sessao_expirada';
+
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = undefined;
+        }
+
+        logger.warn(
+          {
+            code,
+            registered: Boolean(state.creds?.registered),
+          },
+          'O WhatsApp encerrou a sessão. Os arquivos foram preservados. Confira Aparelhos conectados e outras instâncias antes de preparar uma nova sessão.'
+        );
+
+        // Não troca a pasta nem inicia novo pareamento automaticamente.
+        // Se necessário, o responsável usa "Preparar nova sessão" no painel.
         return;
-      }
-      status='aguardando_reconexao';
-      scheduleReconnect();
+            }
     }
   });
   current.ev.on('group-participants.update', event => {
