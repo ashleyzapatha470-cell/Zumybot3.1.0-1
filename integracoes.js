@@ -383,12 +383,27 @@ export function createIntegrations({ downloadMedia, logger = console, env = proc
 
   const youtubeActive = new Set();
 
-  async function playYoutube({ arg, reply, send, jid }) {
+  async function playapple({ arg, reply, send, jid }) {
     if (!arg.trim() || arg.length > 150) return reply('Use !play NOME DA MÚSICA, com até 150 caracteres.');
     if (youtubeActive.has(jid) || youtubeActive.size >= 2) return reply('Há downloads em andamento. Tente novamente em instantes.');
     youtubeActive.add(jid);
     let folder;
     try {
+          arg = String(arg || '').trim();
+
+    if (/^https?:\/\//i.test(arg)) {
+      let endereco;
+
+      try {
+        endereco = new URL(arg);
+      } catch {
+        return reply('Link inválido. Confira o endereço.');
+      }
+
+      if (endereco.hostname === 'music.apple.com') {
+        return playApple({ arg, reply, send, jid });
+      }
+    }
       folder = await mkdtemp(join(tmpdir(), 'zumy-youtube-'));
       const common = ['--ignore-config', '--no-playlist', '--js-runtimes', 'node',
         '--no-warnings', '--socket-timeout', '15', '--retries', '1', '--fragment-retries', '1'];
